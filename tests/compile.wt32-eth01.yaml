@@ -25,6 +25,9 @@ logger:
 
 api:
   actions:
+    - action: crypto_selftest
+      then:
+        - lambda: 'id(keypad_bridge).run_crypto_selftest();'
     - action: rearm_keypad
       then:
         - switchbot_keypad_bridge.rearm: keypad_bridge

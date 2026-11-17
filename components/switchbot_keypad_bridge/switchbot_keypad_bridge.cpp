@@ -12,6 +12,7 @@
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 #include "ble_utils.h"
+#include "aes_ctr.h"
 #include "keypad_advert.h"
 #include "mac_utils.h"
 
@@ -426,6 +427,34 @@ void SwitchbotKeypadBridge::rearm() {
   ESP_LOGI(TAG, "Reporting locked state on the next keypad poll (rearm)");
 }
 
+bool SwitchbotKeypadBridge::run_crypto_selftest() {
+  const uint8_t key[16]{};
+  const uint8_t nonce[12]{};
+  const uint8_t plaintext[16]{};
+  const uint8_t expected_ciphertext[16] = {
+      0x03, 0x88, 0xDA, 0xCE, 0x60, 0xB6, 0xA3, 0x92,
+      0xF3, 0x28, 0xC2, 0xB9, 0x71, 0xB2, 0xFE, 0x78};
+  const uint8_t expected_tag[16] = {
+      0xAB, 0x6E, 0x47, 0xD4, 0x2C, 0xEC, 0x13, 0xBD,
+      0xF5, 0x3A, 0x67, 0xB2, 0x12, 0x57, 0xBD, 0xDF};
+  uint8_t ciphertext[16]{};
+  uint8_t tag[16]{};
+  uint8_t recovered[16]{};
+  const bool ok =
+      aes_gcm_encrypt_raw_key(key, nonce, plaintext, ciphertext, sizeof(plaintext), tag) &&
+      std::memcmp(ciphertext, expected_ciphertext, sizeof(ciphertext)) == 0 &&
+      std::memcmp(tag, expected_tag, sizeof(tag)) == 0 &&
+      aes_gcm_decrypt_raw_key(key, nonce, expected_ciphertext, recovered, sizeof(recovered)) &&
+      std::memcmp(recovered, plaintext, sizeof(plaintext)) == 0;
+  if (ok) {
+    ESP_LOGI(TAG, "GCM primitive self-test: PASS (ciphertext/full tag/decrypt known-answer vector)");
+  } else {
+    ESP_LOGE(TAG, "GCM primitive self-test: FAIL");
+  }
+  ESP_LOGI(TAG, "GCM self-test does not validate received tags, keypad compatibility or replay protection");
+  return ok;
+}
+
 void SwitchbotKeypadBridge::update_rearm_timer_() {
   if (this->keypad_state_.update(millis())) {
     ESP_LOGI(TAG, "Face/palm rearm timer expired; reporting locked state on the next keypad poll");
@@ -739,21 +768,18 @@ bool SwitchbotKeypadBridge::relay_to_lock_async_(const FrameHeader &header,
 
 void SwitchbotKeypadBridge::send_ack_(const FrameHeader &header) {
   const uint8_t ack[LockSession::HEADER_LEN] = {0x01, header.key_id, header.seq_a, header.seq_b};
-  ESP_LOGV(TAG, "TX keypad ack %s",
-           format_hex_pretty(ack, sizeof(ack)).c_str());
+  ESP_LOGD(TAG, "Keypad TX: mode=ctr kind=ack length=%zu", sizeof(ack));
   this->notify_(ack, sizeof(ack));
 }
 
 void SwitchbotKeypadBridge::send_encrypted_response_(const FrameHeader &header,
                                                     const uint8_t *plaintext, size_t length) {
-  ESP_LOGV(TAG, "TX keypad plaintext %s",
-           format_hex_pretty(plaintext, length).c_str());
   uint8_t packet[LockSession::MAX_PACKET];
   const size_t n = this->session_.encrypt_response(header, plaintext, length, packet);
   if (n == 0) {
     return;  // error already logged
   }
-  ESP_LOGV(TAG, "TX keypad %s", format_hex_pretty(packet, n).c_str());
+  ESP_LOGD(TAG, "Keypad TX: mode=ctr kind=encrypted length=%zu", n);
   this->notify_(packet, n);
 }
 

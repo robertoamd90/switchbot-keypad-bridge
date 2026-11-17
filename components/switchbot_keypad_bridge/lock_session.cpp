@@ -54,8 +54,7 @@ LockSession::Action LockSession::process_frame(const std::string &frame) {
   // frame. The bridge may relay plaintext asynchronously after COMMAND.
   this->clear_transient_();
 
-  ESP_LOGV(TAG, "RX WIRE %zu bytes: %s", frame.size(),
-           format_hex_pretty(reinterpret_cast<const uint8_t *>(frame.data()), frame.size()).c_str());
+  ESP_LOGD(TAG, "Keypad RX: mode=ctr length=%zu", frame.size());
 
   if (this->is_iv_request_(frame)) {
     // The IV request advertises which key_id the keypad will use for the
@@ -72,7 +71,8 @@ LockSession::Action LockSession::process_frame(const std::string &frame) {
       this->retired_ = CryptoContext{};
       this->slot_id_ = requested_slot;
     }
-    ESP_LOGD(TAG, "IV request");
+    ESP_LOGD(TAG, "Keypad handshake: mode=ctr request_length=%zu response_length=%zu",
+             frame.size(), this->iv_response_.size());
     // Do not overwrite active_ yet. Vision-family keypads can send a delayed
     // state poll from the previous generation after requesting the next IV.
     this->ensure_pending_iv_();
@@ -143,7 +143,8 @@ LockSession::Action LockSession::process_frame(const std::string &frame) {
     return Action::NONE;  // error already logged
   }
 
-  ESP_LOGD(TAG, "RX %s", format_hex_pretty(plaintext, ct_len).c_str());
+  ESP_LOGD(TAG, "Keypad decrypt: mode=ctr context=%s payload_length=%zu",
+           uses_pending ? "pending" : uses_active ? "active" : "retired", ct_len);
 
   this->command_ = decode_lock_command(plaintext, ct_len);
 
@@ -306,8 +307,7 @@ void LockSession::ensure_pending_iv_() {
   if (this->pending_.valid) {
     std::memcpy(this->iv_response_.data() + IV_RESPONSE_HEADER,
                 this->pending_.iv.data(), AES_IV_SIZE);
-    ESP_LOGV(TAG, "Reusing pending IV: %s",
-             format_hex_pretty(this->pending_.iv.data(), AES_IV_SIZE).c_str());
+    ESP_LOGD(TAG, "Keypad handshake: reusing pending context");
     return;
   }
 
@@ -348,8 +348,8 @@ void LockSession::ensure_pending_iv_() {
   this->pending_.valid = true;
   std::memcpy(this->iv_response_.data() + IV_RESPONSE_HEADER,
               this->pending_.iv.data(), AES_IV_SIZE);
-  ESP_LOGV(TAG, "Pending IV: %s",
-           format_hex_pretty(this->pending_.iv.data(), AES_IV_SIZE).c_str());
+  ESP_LOGD(TAG, "Keypad handshake: created pending context; active=%s",
+           this->active_.valid ? "yes" : "no");
 }
 
 bool LockSession::is_replayed_action_(const CryptoContext &context,

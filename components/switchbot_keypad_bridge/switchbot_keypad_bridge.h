@@ -82,6 +82,10 @@ class SwitchbotKeypadBridge : public Component {
   // or publishing a Lock event. Safe to call from local ESPHome automations.
   void rearm();
 
+  // Explicit diagnostic using a public known-answer vector. Does not use or
+  // modify pairing keys, crypto sessions, lock state, events or the relay.
+  bool run_crypto_selftest();
+
   bool is_pairing_active() const { return this->pairing_ui_.is_running(); }
 
   // Forgets the linked keypad and lock, rotates the shared key in place and
