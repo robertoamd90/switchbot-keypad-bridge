@@ -10,6 +10,12 @@ Se non hai ancora uno YAML, usa il file completo
 Non richiede altri YAML o cartelle locali. Usa ESP-IDF, flash 4 MB e nessuna
 PSRAM. Scarica il componente direttamente dal branch diagnostico pubblicato.
 
+Compilazione verificata con ESPHome 2026.10.2: firmware 1.290.814 byte su
+1.835.008 byte disponibili per l'applicazione (70,3%); RAM statica dichiarata
+132.692 su 321.296 byte (41,3%). Build eseguita con credenziali di esempio e
+sorgente locale equivalente al branch pubblicato. Questi numeri non misurano i
+picchi di heap durante Wi-Fi, TLS e BLE; la stabilita va verificata sulla scheda.
+
 In ESPHome Device Builder crea un dispositivo con nome
 `switchbot-keypad-bridge`, apri il suo editor e sostituisci il contenuto con quel
 file. Nei secrets di Device Builder devono essere presenti:
