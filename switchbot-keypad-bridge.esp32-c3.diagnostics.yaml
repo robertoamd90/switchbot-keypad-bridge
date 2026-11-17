@@ -1,0 +1,64 @@
+# Complete configuration for ESP32-C3-DevKitM-1, ready for ESPHome Device Builder.
+# Add wifi_ssid, wifi_password and ota_password to Device Builder's secrets.
+substitutions:
+  bridge_component_source: github://robertoamd90/switchbot-keypad-bridge@feat/keypad-gcm-investigation
+
+esphome:
+  name: switchbot-keypad-bridge
+  friendly_name: SwitchBot Keypad Bridge
+  on_boot:
+    - priority: -100
+      then:
+        - lambda: 'id(keypad_bridge).run_crypto_selftest();'
+
+esp32:
+  board: esp32-c3-devkitm-1
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+
+external_components:
+  - source: ${bridge_component_source}
+    components: [switchbot_keypad_bridge]
+    refresh: 0s
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+logger:
+  level: DEBUG
+  logs:
+    switchbot_keypad_bridge: INFO
+    switchbot_keypad_bridge.session: DEBUG
+
+api:
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+time:
+  - platform: sntp
+
+switchbot_keypad_bridge:
+  id: keypad_bridge
+  rearm_after: 20s
+  keypad_action:
+    name: Action
+  keypad:
+    name: Keypad
+  linked_lock:
+    name: Lock
+  keypad_battery_level:
+    name: Keypad battery
+  lock_battery_level:
+    name: Lock battery
+  reset_button:
+    name: Reset
+  on_unlock:
+    - homeassistant.event:
+        event: esphome.switchbot_keypad_unlock
+        data:
+          method: !lambda 'return method;'
+          index: !lambda 'return to_string(index);'

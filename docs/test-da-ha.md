@@ -3,6 +3,33 @@
 Questo branch prepara la diagnostica: il collegamento keypad resta CTR.
 Il self-test GCM verifica la primitiva sull'ESP32; non abilita GCM sul keypad.
 
+## Primo avvio con ESP32-C3-DevKitM-1
+
+Se non hai ancora uno YAML, usa il file completo
+[`switchbot-keypad-bridge.esp32-c3.diagnostics.yaml`](../switchbot-keypad-bridge.esp32-c3.diagnostics.yaml).
+Non richiede altri YAML o cartelle locali. Usa ESP-IDF, flash 4 MB e nessuna
+PSRAM. Scarica il componente direttamente dal branch diagnostico pubblicato.
+
+In ESPHome Device Builder crea un dispositivo con nome
+`switchbot-keypad-bridge`, apri il suo editor e sostituisci il contenuto con quel
+file. Nei secrets di Device Builder devono essere presenti:
+
+```yaml
+wifi_ssid: "NOME_DELLA_TUA_RETE"
+wifi_password: "PASSWORD_DELLA_TUA_RETE"
+ota_password: "SCEGLI_UNA_PASSWORD_OTA"
+```
+
+Usa la prima installazione tramite USB: dal browser sul computer collegato alla
+scheda, oppure attraverso l'host HA se la scheda e fisicamente collegata a
+quell'host. L'installazione wireless sara disponibile dopo il primo avvio in rete.
+
+Al primo avvio apri i log e cerca `GCM primitive self-test: PASS`. Il bridge
+senza keypad associato apre automaticamente il wizard all'indirizzo
+`http://<IP-della-scheda>/`: da li accedi al tuo account SwitchBot e associ il
+keypad. Non inviare le credenziali SwitchBot in chat e non inserirle nello YAML.
+Successivamente esegui i due tentativi di sblocco descritti piu sotto.
+
 ## Modifica il dispositivo esistente
 
 Conserva lo YAML funzionante: scheda, flash, PSRAM, rete, nome, API, OTA e
