@@ -4,6 +4,26 @@ Status: investigation tooling only. No GCM server handshake is advertised yet.
 CTR and existing saved associations remain in use. No key export or rotation is
 needed for the first test. Firmware compilation is distinct from hardware testing.
 
+SwitchBot bulletin [ORSA-2026-002](https://www.switcbot.live/pages/security-bulletins)
+lists Keypad Touch **2.9** as the first fixed firmware and names AES-GCM, unique
+nonces, and verification before executing commands as parts of the fix. The
+bulletin gives no BLE frame layout, tag length, or direction-specific counter
+rules. A successful CTR unlock against this bridge does not identify the
+keypad's firmware or rule out support for another mode.
+
+On the test ESP32-C3, the boot primitive self-test and BLE advertising passed.
+The dedicated Keypad Touch paired, then sent two successful CTR fingerprint
+unlocks. The runtime handshake request was eight bytes. The bridge selected
+CTR and sent a twenty-byte session reply. The keypad firmware was not present
+in those logs. For the GCM experiment, record its version from the SwitchBot app.
+
+The updated boot diagnostic also prints `GCM tag-prefix self-test: PASS/FAIL`.
+It checks the reference framing's two-byte prefix using a public AES-GCM vector
+and checks that a modified tag or ciphertext is rejected and the output buffer
+cleared. The updated C3 firmware compiles with ESPHome 2026.10.2. This new
+self-test still needs a run on the physical C3; it does not negotiate with the
+keypad or establish that its protocol uses the same tag format.
+
 ## What to run now
 
 The temporary development environment prepared in this session is:

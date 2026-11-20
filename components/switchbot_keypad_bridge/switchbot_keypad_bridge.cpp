@@ -451,8 +451,28 @@ bool SwitchbotKeypadBridge::run_crypto_selftest() {
   } else {
     ESP_LOGE(TAG, "GCM primitive self-test: FAIL");
   }
-  ESP_LOGI(TAG, "GCM self-test does not validate received tags, keypad compatibility or replay protection");
-  return ok;
+  const uint8_t prefix[2] = {expected_tag[0], expected_tag[1]};
+  const uint8_t wrong_prefix[2] = {static_cast<uint8_t>(prefix[0] ^ 1), prefix[1]};
+  uint8_t altered_ciphertext[sizeof(expected_ciphertext)];
+  std::memcpy(altered_ciphertext, expected_ciphertext, sizeof(altered_ciphertext));
+  altered_ciphertext[0] ^= 1;
+  const uint8_t zeros[sizeof(recovered)]{};
+  const auto rejects_and_clears = [&](const uint8_t *input, const uint8_t (&received)[2]) {
+    std::memset(recovered, 0xFF, sizeof(recovered));
+    return !aes_gcm_decrypt_verify_prefix(key, nonce, input, recovered, sizeof(recovered), received) &&
+           std::memcmp(recovered, zeros, sizeof(recovered)) == 0;
+  };
+  const bool prefix_ok =
+      aes_gcm_decrypt_verify_prefix(key, nonce, expected_ciphertext, recovered, sizeof(recovered), prefix) &&
+      std::memcmp(recovered, plaintext, sizeof(plaintext)) == 0 &&
+      rejects_and_clears(expected_ciphertext, wrong_prefix) &&
+      rejects_and_clears(altered_ciphertext, prefix);
+  if (prefix_ok) {
+    ESP_LOGI(TAG, "GCM tag-prefix self-test: PASS (valid tag accepted, altered tag and ciphertext rejected)");
+  } else {
+    ESP_LOGE(TAG, "GCM tag-prefix self-test: FAIL");
+  }
+  return ok && prefix_ok;
 }
 
 void SwitchbotKeypadBridge::update_rearm_timer_() {
