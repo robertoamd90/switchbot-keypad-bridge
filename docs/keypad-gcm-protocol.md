@@ -150,7 +150,7 @@ existing association key. This is observed evidence for the first keypad to
 bridge frame. The diagnostic sent no encrypted response, so this run does not
 establish either reply nonce selection or subsequent command progression.
 
-The next version of **Test keypad GCM** sends one synthetic unlock response
+The second version of **Test keypad GCM** sent one synthetic unlock response
 only after the first frame has a matching tag and decodes to an unlock. It uses
 the existing Touch response payload and the `N+1` reply hypothesis from the
 physical lock client. It then measures the first follow-up on that connection
@@ -158,6 +158,17 @@ at `N`, `N+1` and `N+2`. It logs the matches and whether `N+2` yields a state
 poll. The probe never sends a second encrypted reply. A match at `N+1` could
 indicate reuse of the nonce used for the diagnostic reply; this is a bench
 experiment, and its counter schedule is not used for normal unlocks.
+
+The Keypad Touch 3.1 sent a 12-byte unlock at `N`, then an eight-byte frame
+after the bridge sent a nine-byte reply encrypted at `N+1`. The eight-byte
+frame's tag prefix matched at `N+1` only. This is evidence of nonce reuse in
+that experiment. It does not establish that the keypad accepted the reply,
+because it may send the follow-up independently.
+
+The current diagnostic withholds the encrypted reply and still checks the
+first follow-up at `N`, `N+1` and `N+2`. It also reports whether a matching
+frame at `N+1` or `N+2` decodes as a state poll. This isolates the effect of
+the reply using the existing Keypad Touch association.
 
 A lock session response supplies real handshake bytes. Whether these can be
 served to a keypad, and whether a transparent central/peripheral relay can

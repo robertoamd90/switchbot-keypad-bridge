@@ -630,7 +630,7 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame) 
   if (frame.size() == 8 && LockSession::is_iv_request(frame)) {
     if (stage == KeypadGcmProbeStage::FOLLOW_UP) {
       this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
-      ESP_LOGI(TAG, "Keypad GCM probe: keypad requested a new handshake after the reply");
+      ESP_LOGI(TAG, "Keypad GCM probe: keypad requested a new handshake without a reply");
       return;
     }
     if (wire[7] != SHARED_SLOT_ORIGINAL) {
@@ -666,24 +666,23 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame) 
     mbedtls_platform_zeroize(scratch, sizeof(scratch));
     return match;
   };
-  auto reply_nonce = initial_nonce;
-  const bool reply_nonce_valid = advance_gcm_probe_nonce(reply_nonce);
-  auto next_nonce = reply_nonce;
-  if (!reply_nonce_valid || !advance_gcm_probe_nonce(next_nonce)) {
-    this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
-    ESP_LOGW(TAG, "Keypad GCM probe: nonce counter overflow");
-    return;
-  }
-
   CommandType initial_type;
   const bool match = check_at(initial_nonce, initial_type);
   if (stage == KeypadGcmProbeStage::FOLLOW_UP) {
+    auto plus_one_nonce = initial_nonce;
+    if (!advance_gcm_probe_nonce(plus_one_nonce)) {
+      this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+      ESP_LOGW(TAG, "Keypad GCM probe: nonce counter overflow");
+      return;
+    }
+    auto plus_two_nonce = plus_one_nonce;
     CommandType plus_one_type, plus_two_type;
-    const bool plus_one = check_at(reply_nonce, plus_one_type);
-    const bool plus_two = check_at(next_nonce, plus_two_type);
-    ESP_LOGI(TAG, "Keypad GCM probe: follow-up length=%zu N=%s N+1=%s N+2=%s poll_at_N+2=%s",
+    const bool plus_one = check_at(plus_one_nonce, plus_one_type);
+    const bool plus_two = advance_gcm_probe_nonce(plus_two_nonce) && check_at(plus_two_nonce, plus_two_type);
+    ESP_LOGI(TAG, "Keypad GCM probe: no-reply follow-up length=%zu N=%s N+1=%s N+2=%s poll_at_N+1=%s poll_at_N+2=%s",
              frame.size(), match ? "match" : "no", plus_one ? "match" : "no",
-             plus_two ? "match" : "no", plus_two_type == CommandType::STATE_POLL ? "yes" : "no");
+             plus_two ? "match" : "no", plus_one && plus_one_type == CommandType::STATE_POLL ? "yes" : "no",
+             plus_two && plus_two_type == CommandType::STATE_POLL ? "yes" : "no");
     this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
     return;
   }
@@ -691,24 +690,14 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame) 
            frame.size(), match ? "match" : "mismatch");
   this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
   if (!match || initial_type != CommandType::UNLOCK) {
-    ESP_LOGI(TAG, "Keypad GCM probe: response requires a tag-matching unlock frame");
+    ESP_LOGI(TAG, "Keypad GCM probe: skipping follow-up observation without a tag-matching unlock");
     return;
   }
 
-  // The lock client suggests N+1 for the reply. Only one payload is ever
-  // encrypted. A follow-up at N+1 is measured as possible reuse and ends the
-  // experiment, just like all other follow-up outcomes.
-  uint8_t response[LockSession::HEADER_LEN + sizeof(RESPONSE_UNLOCK)] = {0x01, wire[1]};
-  uint8_t tag[16];
-  if (!aes_gcm_encrypt_raw_key(this->shared_key_.data(), reply_nonce.data(), RESPONSE_UNLOCK,
-                              response + LockSession::HEADER_LEN, sizeof(RESPONSE_UNLOCK), tag)) {
-    return;
-  }
-  response[2] = tag[0];
-  response[3] = tag[1];
-  this->notify_(response, sizeof(response));
+  // The previous experiment found a keypad frame at N+1 after a reply at
+  // N+1. Withhold the reply to measure whether the keypad advances on its own.
   this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FOLLOW_UP;
-  ESP_LOGI(TAG, "Keypad GCM probe: sent diagnostic reply length=%zu nonce=N+1", sizeof(response));
+  ESP_LOGI(TAG, "Keypad GCM probe: response withheld; waiting for follow-up");
 }
 
 void SwitchbotKeypadBridge::on_rx_frame_(const std::string &frame) {
