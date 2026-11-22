@@ -290,6 +290,9 @@ void SwitchbotKeypadBridge::loop() {
         if (ev.connection == this->keypad_gcm_connection_) {
           const auto command = this->keypad_gcm_command_;
           const auto stage = this->keypad_gcm_probe_stage_;
+          if (stage == KeypadGcmProbeStage::HOLD_POLL_REPLY) {
+            ESP_LOGI(TAG, "Poll hold: disconnected at +%u ms before reply", unsigned(millis() - this->poll_hold_started_));
+          }
           const bool reference_test = this->keypad_gcm_reference_active_;
           const bool complete = stage == KeypadGcmProbeStage::AFTER_POLL_REPLY &&
               millis() - this->keypad_gcm_connection_started_ < GCM_EXCHANGE_TIMEOUT_MS;
@@ -338,6 +341,19 @@ void SwitchbotKeypadBridge::loop() {
       NimBLEDevice::startAdvertising();
     } else if (ev.type == QueuedEvent::RX) {
       this->on_rx_frame_(ev.frame, ev.connection);
+    }
+  }
+
+  if (this->keypad_gcm_probe_stage_ == KeypadGcmProbeStage::HOLD_POLL_REPLY &&
+      millis() - this->poll_hold_started_ >= 2000) {
+    this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+    if (millis() - this->keypad_gcm_connection_started_ < GCM_EXCHANGE_TIMEOUT_MS &&
+        this->tx_characteristic_->notify(this->held_poll_reply_.data(), this->held_poll_reply_.size(),
+                                        this->keypad_gcm_connection_)) {
+      this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::AFTER_POLL_REPLY;
+      ESP_LOGI(TAG, "Poll hold: reply submitted at +%u ms", unsigned(millis() - this->poll_hold_started_));
+    } else {
+      ESP_LOGW(TAG, "Poll hold: reply not submitted at +%u ms", unsigned(millis() - this->poll_hold_started_));
     }
   }
 
@@ -692,6 +708,12 @@ void SwitchbotKeypadBridge::reject_keypad_gcm_exchange_() {
 
 void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, uint16_t connection) {
   const auto stage = this->keypad_gcm_probe_stage_;
+  if (stage == KeypadGcmProbeStage::HOLD_POLL_REPLY) {
+    this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+    ESP_LOGI(TAG, "Poll hold: additional keypad frame at +%u ms; reply cancelled",
+             unsigned(millis() - this->poll_hold_started_));
+    return;
+  }
   if (stage == KeypadGcmProbeStage::FINISHED)
     return;
   const auto *wire = reinterpret_cast<const uint8_t *>(frame.data());
@@ -771,6 +793,14 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
     }
     response[2] = tag[0];
     response[3] = tag[1];
+    if (this->gcm_empty_ack_test_ && stage == KeypadGcmProbeStage::WAIT_POLL) {
+      if (LockSession::HEADER_LEN + length != this->held_poll_reply_.size()) return false;
+      std::memcpy(this->held_poll_reply_.data(), response, this->held_poll_reply_.size());
+      this->poll_hold_started_ = millis();
+      this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::HOLD_POLL_REPLY;
+      ESP_LOGI(TAG, "Poll hold: start at +0 ms; waiting 2000 ms");
+      return true;
+    }
     if (!this->tx_characteristic_->notify(response, LockSession::HEADER_LEN + length, connection)) {
       ESP_LOGW(TAG, "Keypad GCM: could not send encrypted reply");
       return false;
@@ -816,6 +846,7 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
         ESP_LOGI(TAG, "Keypad GCM: using genuine lock poll payload at nonce=N+3");
       }
       if (send_reply(nonces[3], state_payload, sizeof(state_payload))) {
+        if (this->keypad_gcm_probe_stage_ == KeypadGcmProbeStage::HOLD_POLL_REPLY) return;
         this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::AFTER_POLL_REPLY;
         ESP_LOGI(TAG, "Keypad GCM probe: sent poll reply nonce=N+3");
       }
