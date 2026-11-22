@@ -292,6 +292,7 @@ class SwitchbotKeypadBridge : public Component {
   enum class KeypadGcmProbeStage : uint8_t { FIRST_FRAME, WAIT_POLL, HOLD_POLL_REPLY, AFTER_POLL_REPLY, FINISHED };
   std::array<uint8_t, 18> held_poll_reply_{};
   uint32_t poll_hold_started_{0};
+  bool withhold_this_poll_reply_{false};
   KeypadGcmProbeStage keypad_gcm_probe_stage_{KeypadGcmProbeStage::FIRST_FRAME};
   std::array<uint8_t, 20> keypad_gcm_probe_reply_{};
   bool keypad_gcm_experimental_{false};

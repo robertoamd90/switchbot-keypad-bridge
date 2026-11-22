@@ -291,7 +291,8 @@ void SwitchbotKeypadBridge::loop() {
           const auto command = this->keypad_gcm_command_;
           const auto stage = this->keypad_gcm_probe_stage_;
           if (stage == KeypadGcmProbeStage::HOLD_POLL_REPLY) {
-            ESP_LOGI(TAG, "Poll hold: disconnected at +%u ms before reply", unsigned(millis() - this->poll_hold_started_));
+            ESP_LOGI(TAG, "Poll hold: disconnected at +%u ms before reply (control=%s)",
+                     unsigned(millis() - this->poll_hold_started_), this->withhold_this_poll_reply_ ? "yes" : "no");
           }
           const bool reference_test = this->keypad_gcm_reference_active_;
           const bool complete = stage == KeypadGcmProbeStage::AFTER_POLL_REPLY &&
@@ -345,6 +346,7 @@ void SwitchbotKeypadBridge::loop() {
   }
 
   if (this->keypad_gcm_probe_stage_ == KeypadGcmProbeStage::HOLD_POLL_REPLY &&
+      !this->withhold_this_poll_reply_ &&
       millis() - this->poll_hold_started_ >= 2000) {
     this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
     if (millis() - this->keypad_gcm_connection_started_ < GCM_EXCHANGE_TIMEOUT_MS &&
@@ -709,6 +711,11 @@ void SwitchbotKeypadBridge::reject_keypad_gcm_exchange_() {
 void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, uint16_t connection) {
   const auto stage = this->keypad_gcm_probe_stage_;
   if (stage == KeypadGcmProbeStage::HOLD_POLL_REPLY) {
+    if (this->withhold_this_poll_reply_) {
+      ESP_LOGI(TAG, "Poll hold: additional frame at +%u ms; control still withholding",
+               unsigned(millis() - this->poll_hold_started_));
+      return;
+    }
     this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
     ESP_LOGI(TAG, "Poll hold: additional keypad frame at +%u ms; reply cancelled",
              unsigned(millis() - this->poll_hold_started_));
@@ -798,7 +805,9 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
       std::memcpy(this->held_poll_reply_.data(), response, this->held_poll_reply_.size());
       this->poll_hold_started_ = millis();
       this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::HOLD_POLL_REPLY;
-      ESP_LOGI(TAG, "Poll hold: start at +0 ms; waiting 2000 ms");
+      this->withhold_this_poll_reply_ = !this->withhold_this_poll_reply_;
+      ESP_LOGI(TAG, "Poll hold: start at +0 ms; %s",
+               this->withhold_this_poll_reply_ ? "control: no reply this session" : "waiting 2000 ms");
       return true;
     }
     if (!this->tx_characteristic_->notify(response, LockSession::HEADER_LEN + length, connection)) {
