@@ -128,6 +128,21 @@ layout contains a zero or nonzero trailer. Repeat three times and record the
 results and lock firmware. This test does not send an encrypted state query or
 measure the runtime nonce progression.
 
+On 22 November 2026 the user ran the probe three times against the same
+updated lock. Each reply had status `0x01`, mode `0x01`, length 20, and an
+all-zero trailer. The probe did not record bytes 1 and 3 or establish whether
+this format is shared across lock models or key slots.
+
+The follow-up **Test keypad GCM** button in the diagnostic wizard arms a
+30-second standalone test. For an exact eight-byte Touch session request on
+its existing slot, the bridge sends the reference header, a fresh 12-byte
+nonce and the observed zero trailer. Header bytes 1 and 3 use the client
+reference values. The probe checks at most one incoming frame using that
+initial nonce and the reference two-byte tag format. It publishes no keypad
+actions during the window and sends no encrypted command reply. The next
+session after the window uses CTR. A match supports the initial request
+format; further work is needed to verify reply and counter rules.
+
 A lock session response supplies real handshake bytes. Whether these can be
 served to a keypad, and whether a transparent central/peripheral relay can
 maintain a working conversation, still require a separate instrumented test.

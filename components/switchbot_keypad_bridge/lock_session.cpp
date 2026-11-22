@@ -56,7 +56,7 @@ LockSession::Action LockSession::process_frame(const std::string &frame) {
 
   ESP_LOGD(TAG, "Keypad RX: mode=ctr length=%zu", frame.size());
 
-  if (this->is_iv_request_(frame)) {
+  if (is_iv_request(frame)) {
     // The IV request advertises which key_id the keypad will use for the
     // rest of the session (`57 00 00 00 0F 21 03 <key_id>`). Adapt to it —
     // Original/Touch uses 0x88, Vision/Vision Pro uses 0xC6.
@@ -261,7 +261,7 @@ LockSession::Action LockSession::process_frame(const std::string &frame) {
   return Action::COMMAND;
 }
 
-bool LockSession::is_iv_request_(const std::string &frame) const {
+bool LockSession::is_iv_request(const std::string &frame) {
   return frame.size() >= SESSION_IV_REQ_MIN &&
          static_cast<uint8_t>(frame[0]) == PROTOCOL_MAGIC &&
          static_cast<uint8_t>(frame[1]) == 0x00 &&

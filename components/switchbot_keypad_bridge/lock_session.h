@@ -62,6 +62,7 @@ class LockSession {
   // Validate, decrypt and decode one received frame. On COMMAND the decoded
   // result is available via header()/command() until the next call.
   Action process_frame(const std::string &frame);
+  static bool is_iv_request(const std::string &frame);
 
   // Valid after process_frame() returned COMMAND.
   const FrameHeader &header() const { return this->header_; }
@@ -86,7 +87,6 @@ class LockSession {
   static constexpr size_t CREDENTIAL_INDEX_COUNT = 256;
   static constexpr size_t UNLOCK_HISTORY_BYTES = CREDENTIAL_INDEX_COUNT / 8;
 
-  bool is_iv_request_(const std::string &frame) const;
   void ensure_pending_iv_();
   void clear_transient_();
 

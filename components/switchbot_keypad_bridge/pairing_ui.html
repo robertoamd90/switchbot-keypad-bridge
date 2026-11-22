@@ -676,7 +676,12 @@
   <section id="screen-locks" class="screen hidden">
     <div class="page-header">
       <h2>Your lock</h2>
-      <p class="subtitle">Select the physical lock to relay keypad commands to.</p>
+      <p class="subtitle" id="locks-subtitle">Select the physical lock to relay keypad commands to.</p>
+    </div>
+
+    <div id="keypad-gcm-probe" class="hidden">
+      <button id="keypad-gcm-probe-btn" class="btn btn-secondary">Test keypad GCM</button>
+      <p id="keypad-gcm-probe-status" role="status" class="subtitle"></p>
     </div>
 
     <div class="keypads-list" id="locks-list">
@@ -970,6 +975,10 @@
       });
       setKeypadPaired(!!login.keypad_paired);
       setLockLinked(!!login.lock_linked);
+      if (login.keypad_session_probe) {
+        document.getElementById('keypad-gcm-probe').classList.remove('hidden');
+        document.getElementById('locks-subtitle').textContent = 'Test BLE session announcements here.';
+      }
       // Land on the first incomplete step; with everything done the Keypad
       // tab shows its completed state.
       if (keypadPaired && !lockLinked) {
@@ -986,6 +995,23 @@
     } finally {
       btn.disabled = false;
       btn.innerHTML = original;
+    }
+  });
+
+  document.getElementById('keypad-gcm-probe-btn').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    const status = document.getElementById('keypad-gcm-probe-status');
+    button.disabled = true;
+    try {
+      await api('POST', '/api/keypad/session-probe');
+      status.textContent = 'Use one fingerprint within 30 seconds and check the ESPHome logs. Keypad actions are suspended during the test.';
+      setTimeout(() => {
+        status.textContent = 'Test window ended. See the ESPHome logs for the result.';
+        button.disabled = false;
+      }, 30000);
+    } catch (err) {
+      status.textContent = err.message;
+      button.disabled = false;
     }
   });
 

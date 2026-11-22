@@ -71,6 +71,7 @@ bool PairingUi::start(uint16_t port) {
   reg("/api/locks",            HTTP_GET,  PairingUi::handle_locks_);
   if (this->gcm_diagnostics_) {
     reg("/api/lock/session-probe", HTTP_POST, PairingUi::handle_lock_session_probe_);
+    reg("/api/keypad/session-probe", HTTP_POST, PairingUi::handle_keypad_session_probe_);
   }
   reg("/api/lock/link",        HTTP_POST, PairingUi::handle_lock_link_);
   reg("/api/lock/link/status", HTTP_GET,  PairingUi::handle_lock_link_status_);
@@ -346,6 +347,8 @@ esp_err_t PairingUi::handle_login_(httpd_req_t *req) {
   cJSON_AddStringToObject(resp, "region", self->cloud_.region().c_str());
   cJSON_AddBoolToObject(resp, "keypad_paired", self->keypad_paired_.load());
   cJSON_AddBoolToObject(resp, "lock_linked", self->lock_linked_.load());
+  cJSON_AddBoolToObject(resp, "keypad_session_probe", self->gcm_diagnostics_ &&
+                          self->keypad_paired_.load() && !self->lock_linked_.load());
   return reply_json_(req, json_take(resp).c_str());
 }
 
@@ -457,6 +460,19 @@ esp_err_t PairingUi::handle_locks_(httpd_req_t *req) {
   ESP_LOGI(TAG, "GET /api/locks -> %u lock(s) of %u account device(s)",
            shown, static_cast<unsigned>(devices.size()));
   return reply_json_(req, json_take(arr, "[]").c_str());
+}
+
+esp_err_t PairingUi::handle_keypad_session_probe_(httpd_req_t *req) {
+  auto *self = static_cast<PairingUi *>(req->user_ctx);
+  self->touch_activity_();
+  if (!self->cloud_.is_logged_in()) {
+    return reply_error_(req, "401 Unauthorized", "Sign in first.");
+  }
+  if (!self->keypad_paired_.load() || self->lock_linked_.load()) {
+    return reply_error_(req, "409 Conflict", "The probe requires a linked keypad in standalone mode.");
+  }
+  self->keypad_probe_requested_.store(true);
+  return reply_json_(req, "{}");
 }
 
 esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {

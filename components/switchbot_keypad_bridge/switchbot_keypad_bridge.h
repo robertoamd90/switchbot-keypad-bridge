@@ -156,6 +156,8 @@ class SwitchbotKeypadBridge : public Component {
   // Validation, decryption and decoding live in LockSession; the bridge
   // dispatches the resulting Action and owns the business logic.
   void on_rx_frame_(const std::string &frame);
+  void update_keypad_gcm_probe_();
+  void inspect_keypad_gcm_frame_(const std::string &frame);
 
   void handle_command_(const FrameHeader &header, const DecodedCommand &command);
   void handle_state_poll_(const FrameHeader &header);
@@ -273,6 +275,11 @@ class SwitchbotKeypadBridge : public Component {
   // crypto). The IV may survive BLE reconnects when the keypad continues the
   // same logical session. Only ever touched from the main task.
   LockSession session_{};
+  bool keypad_gcm_probe_active_{false};
+  uint32_t keypad_gcm_probe_started_{0};
+  uint8_t keypad_gcm_probe_slot_{0};
+  bool keypad_gcm_probe_frame_seen_{false};
+  std::array<uint8_t, 20> keypad_gcm_probe_reply_{};
 
   PhysicalLockClient physical_lock_client_{};
   LinkedLockInfo linked_lock_info_{};

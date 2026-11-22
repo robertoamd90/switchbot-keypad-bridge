@@ -55,6 +55,7 @@ class PairingUi {
   }
   void set_lock_linked(bool linked) { this->lock_linked_.store(linked); }
   void set_gcm_diagnostics(bool enabled) { this->gcm_diagnostics_ = enabled; }
+  bool take_keypad_probe_request() { return this->keypad_probe_requested_.exchange(false); }
 
   // The embedded UI page, gzip-compressed and baked into flash by codegen
   // (see __init__.py); served verbatim with Content-Encoding: gzip.
@@ -104,6 +105,7 @@ class PairingUi {
   static esp_err_t handle_pair_status_(httpd_req_t *req);
   static esp_err_t handle_locks_(httpd_req_t *req);
   static esp_err_t handle_lock_session_probe_(httpd_req_t *req);
+  static esp_err_t handle_keypad_session_probe_(httpd_req_t *req);
   static esp_err_t handle_lock_link_(httpd_req_t *req);
   static esp_err_t handle_lock_link_status_(httpd_req_t *req);
 
@@ -116,6 +118,7 @@ class PairingUi {
 
   httpd_handle_t server_{nullptr};
   bool gcm_diagnostics_{false};
+  std::atomic<bool> keypad_probe_requested_{false};
   CloudClient    cloud_{};
   KeypadPairer   pairer_{};
   LockLinker     linker_{};

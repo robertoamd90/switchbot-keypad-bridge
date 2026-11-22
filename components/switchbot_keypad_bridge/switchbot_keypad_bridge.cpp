@@ -7,6 +7,7 @@
 
 #include <esp_mac.h>
 #include <esp_random.h>
+#include <mbedtls/platform_util.h>
 #include <psa/crypto.h>
 
 #include "esphome/core/hal.h"
@@ -234,6 +235,7 @@ void SwitchbotKeypadBridge::setup() {
 }
 
 void SwitchbotKeypadBridge::loop() {
+  this->update_keypad_gcm_probe_();
   // Observe finished wizard jobs from the main loop — this queues the pending
   // applies below even when the browser stopped polling mid-job.
   if (this->pairing_ui_.is_running()) {
@@ -264,9 +266,11 @@ void SwitchbotKeypadBridge::loop() {
   for (const auto &ev : pending) {
     if (ev.type == QueuedEvent::CONNECT) {
       ESP_LOGI(TAG, "Keypad connected");
+      this->keypad_gcm_probe_slot_ = 0;
       this->session_.reset_transport();
     } else if (ev.type == QueuedEvent::DISCONNECT) {
       ESP_LOGI(TAG, "Keypad disconnected, restarting advertising");
+      this->keypad_gcm_probe_slot_ = 0;
       this->session_.reset_transport();
       NimBLEDevice::startAdvertising();
     } else if (ev.type == QueuedEvent::RX) {
@@ -585,7 +589,70 @@ bool SwitchbotKeypadBridge::prepare_ble_() {
 // RX path
 // ---------------------------------------------------------------------------
 
+void SwitchbotKeypadBridge::update_keypad_gcm_probe_() {
+  if (!this->gcm_diagnostics_)
+    return;
+  const uint32_t now = millis();
+  if (this->keypad_gcm_probe_active_ && now - this->keypad_gcm_probe_started_ >= 30000) {
+    this->keypad_gcm_probe_active_ = false;
+    this->keypad_gcm_probe_slot_ = 0;
+    this->session_.reset();
+    ESP_LOGI(TAG, "Keypad GCM probe ended: first frame %s; next session uses CTR",
+             this->keypad_gcm_probe_frame_seen_ ? "checked" : "not received");
+  }
+  if (this->pairing_ui_.take_keypad_probe_request() && !this->keypad_gcm_probe_active_ &&
+      this->keypad_paired_ && !this->lock_linked_ && !this->is_failed()) {
+    this->keypad_gcm_probe_active_ = true;
+    this->keypad_gcm_probe_started_ = now;
+    this->keypad_gcm_probe_slot_ = 0;
+    this->keypad_gcm_probe_frame_seen_ = false;
+    this->session_.reset();
+    ESP_LOGI(TAG, "Keypad GCM probe armed for 30 seconds; keypad actions suspended");
+  }
+}
+
+void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame) {
+  if (this->keypad_gcm_probe_frame_seen_)
+    return;
+  const auto *wire = reinterpret_cast<const uint8_t *>(frame.data());
+  if (frame.size() == 8 && LockSession::is_iv_request(frame)) {
+    if (wire[7] != SHARED_SLOT_ORIGINAL) {
+      ESP_LOGW(TAG, "Keypad GCM probe: skipping a session request outside the Touch test slot");
+      return;
+    }
+    auto &reply = this->keypad_gcm_probe_reply_;
+    if (this->keypad_gcm_probe_slot_ == 0) {
+      // Client reference header and three observed 20-byte GCM lock replies
+      // with all-zero trailers. This profile is only for the experiment.
+      reply = {0x01, 0x00, 0x01, 0x00};
+      esp_fill_random(reply.data() + 4, 12);
+      this->keypad_gcm_probe_slot_ = wire[7];
+    }
+    this->notify_(reply.data(), reply.size());
+    ESP_LOGI(TAG, "Keypad GCM probe: advertised mode=0x01 length=20 trailer=all-zero");
+    return;
+  }
+  if (this->keypad_gcm_probe_slot_ == 0 || frame.size() <= LockSession::HEADER_LEN ||
+      frame.size() > LockSession::MAX_PACKET || wire[0] != 0x57 ||
+      wire[1] != this->keypad_gcm_probe_slot_) {
+    return;
+  }
+  this->keypad_gcm_probe_frame_seen_ = true;
+  const uint8_t prefix[2] = {wire[2], wire[3]};
+  uint8_t scratch[LockSession::MAX_PAYLOAD];
+  const bool match = aes_gcm_decrypt_verify_prefix(
+      this->shared_key_.data(), this->keypad_gcm_probe_reply_.data() + 4,
+      wire + LockSession::HEADER_LEN, scratch, frame.size() - LockSession::HEADER_LEN, prefix);
+  mbedtls_platform_zeroize(scratch, sizeof(scratch));
+  ESP_LOGI(TAG, "Keypad GCM probe: first frame length=%zu tag_prefix=%s nonce=initial",
+           frame.size(), match ? "match" : "mismatch");
+}
+
 void SwitchbotKeypadBridge::on_rx_frame_(const std::string &frame) {
+  if (this->keypad_gcm_probe_active_) {
+    this->inspect_keypad_gcm_frame_(frame);
+    return;
+  }
   switch (this->session_.process_frame(frame)) {
     case LockSession::Action::SEND_IV:
       this->notify_(this->session_.iv_response(), this->session_.iv_response_size());
