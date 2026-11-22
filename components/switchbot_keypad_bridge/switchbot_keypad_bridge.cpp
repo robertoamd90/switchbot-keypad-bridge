@@ -308,7 +308,11 @@ void SwitchbotKeypadBridge::loop() {
           if (this->gcm_lock_slot_test_ && complete) {
             ESP_LOGI(TAG, "Keypad GCM slot test: poll observed; action events suspended");
           }
-          if (!this->gcm_lock_slot_test_ && !reference_test && complete &&
+          if (this->gcm_empty_ack_test_) {
+            ESP_LOGI(TAG, "Keypad GCM empty ACK test ended: poll reply %s; actions suspended",
+                     complete ? "sent" : "not completed");
+          }
+          if (!this->gcm_empty_ack_test_ && !this->gcm_lock_slot_test_ && !reference_test && complete &&
               this->keypad_paired_ && !this->lock_linked_) {
             if (command.type == CommandType::LOCK) {
               this->keypad_state_.rearm();
@@ -843,10 +847,17 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
   }
 
   const uint8_t *response = lock ? RESPONSE_LOCK : RESPONSE_UNLOCK;
-  const size_t response_length = lock ? sizeof(RESPONSE_LOCK) : sizeof(RESPONSE_UNLOCK);
+  size_t response_length = lock ? sizeof(RESPONSE_LOCK) : sizeof(RESPONSE_UNLOCK);
+  if (this->gcm_empty_ack_test_) {
+    if (!touch_unlock || method != UnlockMethod::FINGERPRINT) return;
+    response_length = 0;
+  }
   if (send_reply(nonces[2], response, response_length)) {
     this->keypad_gcm_command_ = initial_command;
     this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::WAIT_POLL;
+    if (this->gcm_empty_ack_test_) {
+      ESP_LOGI(TAG, "Keypad GCM empty ACK sent: wire_bytes=4 payload_bytes=0 tag=computed");
+    }
     ESP_LOGI(TAG, "Keypad GCM: sent %s reply nonce=N+2", lock ? "lock" : "unlock");
   }
 }

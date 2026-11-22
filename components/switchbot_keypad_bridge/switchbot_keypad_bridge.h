@@ -89,6 +89,7 @@ class SwitchbotKeypadBridge : public Component {
     this->keypad_gcm_experimental_ = enabled;
     this->pairing_ui_.set_keypad_gcm_experimental(enabled);
   }
+  void set_gcm_empty_ack_test(bool enabled) { this->gcm_empty_ack_test_ = enabled; }
 
   // Report LOCKED on the next keypad poll, without operating a physical lock
   // or publishing a Lock event. Safe to call from local ESPHome automations.
@@ -149,6 +150,7 @@ class SwitchbotKeypadBridge : public Component {
 
   bool gcm_diagnostics_{false};
   bool gcm_lock_slot_test_{false};
+  bool gcm_empty_ack_test_{false};
 
   // Generates a fresh AES-128 session key into shared_key_ and persists it
   // to NVS — the one place keys are created (first boot and reset_pairing()).
