@@ -49,6 +49,11 @@ class PhysicalLockClient {
   using CommandProgressCallback = std::function<void(size_t command_index)>;
   using ResponseCallback = std::function<void(const std::vector<uint8_t> &response)>;
 
+  // Request the lock's session announcement, then disconnect. Only the
+  // account slot is needed. No encrypted command or pairing write is sent.
+  bool probe_session(const std::string &mac, uint8_t key_id, std::string &reply,
+                     std::string &error_out);
+
   // Verify that the configured key/slot can open an encrypted BLE session and
   // return a plausible lock-info payload.
   bool verify(const Config &config, std::string &error_out,
@@ -86,6 +91,10 @@ class PhysicalLockClient {
       const ProgressCallback &verify_progress = nullptr);
 
  private:
+  bool exchange_(const Config &config, const std::vector<std::vector<uint8_t>> &commands,
+                 std::vector<std::vector<uint8_t>> &responses, std::string &error_out,
+                 const ProgressCallback &progress, const ResponseCallback &response_callback,
+                 std::string *session_probe_reply);
   enum class CryptoMode : uint8_t { CTR, GCM };
 
   struct Session {

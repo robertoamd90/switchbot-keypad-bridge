@@ -77,6 +77,10 @@ class SwitchbotKeypadBridge : public Component {
   }
   void set_battery_scan_interval(uint32_t ms) { this->battery_scan_interval_ms_ = ms; }
   void set_rearm_after(uint32_t ms) { this->keypad_state_.set_rearm_after(ms); }
+  void set_gcm_diagnostics(bool enabled) {
+    this->gcm_diagnostics_ = enabled;
+    this->pairing_ui_.set_gcm_diagnostics(enabled);
+  }
 
   // Report LOCKED on the next keypad poll, without operating a physical lock
   // or publishing a Lock event. Safe to call from local ESPHome automations.
@@ -134,6 +138,8 @@ class SwitchbotKeypadBridge : public Component {
   };
 
   // ----- Configuration / setup -----------------------------------------------
+
+  bool gcm_diagnostics_{false};
 
   // Generates a fresh AES-128 session key into shared_key_ and persists it
   // to NVS — the one place keys are created (first boot and reset_pairing()).

@@ -29,6 +29,11 @@ this setup, associating the dedicated keypad with that lock and reopening the
 lock update flow made the keypad update available. The test keypad now reports
 **3.1**. This is an observation for this setup, not a general rollout rule.
 
+The user then paired the dedicated 3.1 keypad back to the standard bridge and
+confirmed that it works. The standard bridge serves CTR at runtime, so this
+establishes the CTR compatibility baseline on 3.1. There is no provisioning
+mode log from that run, and no reason to repeat pairing just for the log.
+
 The wizard now logs `Keypad provisioning handshake: mode=... response_length=...`
 and stops on modes other than CTR before provisioning writes. This measures the
 updated keypad acting as a BLE server during association. The later runtime
@@ -113,12 +118,15 @@ References:
 
 ### B. Existing ESP32 plus a GCM physical lock — preferred hardware route
 
-The project already has the raw shared key internally and central/peripheral BLE
-roles. Extend the physical-lock client with an opt-in, read-only session probe:
-request a session, classify its exact layout, and verify response tag prefixes
-under candidate nonce rules on non-actuating state queries. Perform calculation
-inside the ESP32; report matches and lengths only. This probe is NOT implemented
-by the present changes. It avoids exporting saved keys and may avoid a sniffer.
+The opt-in `gcm_diagnostics: true` setting opens the wizard during startup even
+with an existing keypad association. Sign in, open **Locks**, and click
+**Test session** on a nearby updated lock from your account. This sends only
+the existing request for a session announcement. The cloud endpoint supplies
+the account slot alongside the communication key. The probe uses only the slot
+on BLE. It reports status, mode, total length and whether the reference GCM
+layout contains a zero or nonzero trailer. Repeat three times and record the
+results and lock firmware. This test does not send an encrypted state query or
+measure the runtime nonce progression.
 
 A lock session response supplies real handshake bytes. Whether these can be
 served to a keypad, and whether a transparent central/peripheral relay can
@@ -197,12 +205,24 @@ python tools/keypad_gcm_lab.py analyze /private/tmp/private-trace.json --key-fil
 
 The tool prints match counts only for candidate (request stride, reply offset)
 of (1,0), (1,1), (2,1), assuming empty AAD. A match is not automatic protocol
-selection. In particular (1,0) reuses the nonce across directions and (1,1)
+selection. The report shows matches for each direction and counts repeated
+nonces among matching frames. It also classifies the handshake trailer as
+all-zero or nonzero without printing the bytes. In particular (1,0) reuses the nonce across directions and (1,1)
 overlaps a reply nonce with the following request. These candidates are useful
 for detecting protocol limitations, not approval to encrypt distinct plaintexts
 with the same key/nonce. Four trailing bytes are deliberately uninterpreted.
 Split at each new handshake; losses, retries, empty ACKs, errors and rotation
 need dedicated handling rather than silently being fitted to this first model.
+
+The all-zero trailer in the pySwitchbot unit tests is synthetic. Both the
+pySwitchbot and OpenSB client parsers discard the trailer from GCM replies.
+For the runtime experiment on Keypad Touch 3.1, start with a genuine GCM
+handshake reply from a compatible SwitchBot lock and compare several replies
+across fresh sessions before deciding what the bridge may generate. The
+minimum evidence for evaluating the candidate nonce progression is two
+consecutive encrypted request/reply pairs from a single session. A setup
+handshake with the keypad acting as a BLE server cannot validate the keypad's
+runtime behavior when it acts as the client.
 
 The wire tag has only 16 bits. Repeated matching exchanges strengthen an
 hypothesis but do not establish 128-bit authentication. This tool does not test

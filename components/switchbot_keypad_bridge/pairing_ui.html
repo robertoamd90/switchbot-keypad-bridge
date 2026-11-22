@@ -1096,6 +1096,7 @@
     const flow = DEVICE_FLOWS[kind];
     const card = document.createElement('div');
     const offline = !device.online;
+    const probe = kind === 'lock' && device.session_probe;
     card.className = 'kp-card' + (offline ? '' : ' online');
     const rssiLabel = device.rssi != null ? '-' + Math.abs(device.rssi) + ' dBm' : 'Nearby';
     const badgeClass = offline ? 'offline' : 'online';
@@ -1109,9 +1110,30 @@
           '<span class="kp-badge ' + badgeClass + '"><span class="dot"></span>' + escapeHtml(badgeText) + '</span>' +
         '</div>' +
       '</div>' +
-      '<button class="btn-pair"' + (offline ? ' disabled' : '') + '>' + flow.action + '</button>';
-    card.querySelector('.btn-pair').addEventListener('click', () => {
-      if (!offline) startDeviceJob(kind, device);
+      '<button class="btn-pair"' + (offline ? ' disabled' : '') + '>' + (probe ? 'Test session' : flow.action) + '</button>';
+    const button = card.querySelector('.btn-pair');
+    button.addEventListener('click', async () => {
+      if (offline) return;
+      if (!probe) {
+        startDeviceJob(kind, device);
+        return;
+      }
+      const result = document.createElement('div');
+      result.className = 'kp-meta';
+      const info = card.querySelector('.kp-info');
+      info.querySelector('[role="status"]')?.remove();
+      result.setAttribute('role', 'status');
+      info.appendChild(result);
+      button.disabled = true;
+      result.textContent = 'Reading session response…';
+      try {
+        const data = await api('POST', '/api/lock/session-probe', { mac: device.mac });
+        result.textContent = `Status ${data.status}, mode ${data.mode}, ${data.length} bytes, trailer ${data.trailer}`;
+      } catch (err) {
+        result.textContent = err.message;
+      } finally {
+        button.disabled = false;
+      }
     });
     return card;
   }

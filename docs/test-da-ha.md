@@ -36,6 +36,18 @@ senza keypad associato apre automaticamente il wizard all'indirizzo
 keypad. Non inviare le credenziali SwitchBot in chat e non inserirle nello YAML.
 Successivamente esegui i due tentativi di sblocco descritti piu sotto.
 
+## Leggere la risposta di sessione da una serratura aggiornata
+
+Nel blocco esistente `switchbot_keypad_bridge`, aggiungi `gcm_diagnostics: true`
+e installa via Wi-Fi. L'esempio completo per C3 include gia questa impostazione.
+Apri il wizard del bridge, accedi a SwitchBot e vai nella scheda **Locks**.
+Scegli la serratura aggiornata vicina alla C3 e premi **Test session** per tre
+prove. Raccogli le tre righe `Lock session probe` o il risultato mostrato nella
+pagina, insieme a modello e firmware della serratura. Il test chiede solo una
+risposta di sessione BLE. Il dispositivo resta utilizzabile come bridge CTR con
+il keypad gia associato. Terminata la prova, puoi rimuovere `gcm_diagnostics`
+alla prossima compilazione per ripristinare l'apertura normale del wizard.
+
 ## Modifica il dispositivo esistente
 
 Conserva lo YAML funzionante: scheda, flash, PSRAM, rete, nome, API, OTA e

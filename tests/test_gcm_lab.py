@@ -43,6 +43,8 @@ class GcmLabTest(unittest.TestCase):
                     lab.analyze(trace_path, key_path)
                 report = output.getvalue()
             self.assertIn("stride=%d reply_offset=%d: 8/8" % (stride, offset), report)
+            expected_reuse = 4 if (stride, offset) == (1, 0) else 3 if stride == 1 else 0
+            self.assertIn(f"requests=4/4 replies=4/4 repeated_nonces_among_matches={expected_reuse}", report)
             self.assertEqual(report.count("8/8"), 1)
             self.assertNotIn(key.hex(), report)
             self.assertNotIn("private test payload", report)

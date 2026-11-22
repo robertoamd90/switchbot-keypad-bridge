@@ -69,6 +69,9 @@ bool PairingUi::start(uint16_t port) {
   reg("/api/pair",          HTTP_POST, PairingUi::handle_pair_);
   reg("/api/pair/status",   HTTP_GET,  PairingUi::handle_pair_status_);
   reg("/api/locks",            HTTP_GET,  PairingUi::handle_locks_);
+  if (this->gcm_diagnostics_) {
+    reg("/api/lock/session-probe", HTTP_POST, PairingUi::handle_lock_session_probe_);
+  }
   reg("/api/lock/link",        HTTP_POST, PairingUi::handle_lock_link_);
   reg("/api/lock/link/status", HTTP_GET,  PairingUi::handle_lock_link_status_);
 
@@ -442,6 +445,7 @@ esp_err_t PairingUi::handle_locks_(httpd_req_t *req) {
     cJSON_AddStringToObject(o, "model", physical_lock_model_str(model));
     cJSON_AddStringToObject(o, "device_type", dev.device_type.c_str());
     cJSON_AddBoolToObject(o, "online", hit != nearby.end());
+    cJSON_AddBoolToObject(o, "session_probe", self->gcm_diagnostics_);
     if (hit != nearby.end()) {
       cJSON_AddNumberToObject(o, "rssi", hit->second.rssi);
     } else {
@@ -455,9 +459,68 @@ esp_err_t PairingUi::handle_locks_(httpd_req_t *req) {
   return reply_json_(req, json_take(arr, "[]").c_str());
 }
 
+esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {
+  auto *self = static_cast<PairingUi *>(req->user_ctx);
+  self->touch_activity_();
+  if (!self->cloud_.is_logged_in()) {
+    return reply_error_(req, "401 Unauthorized", "Sign in first.");
+  }
+  if (self->pairer_.state() == KeypadPairer::State::RUNNING ||
+      self->linker_.state() == LockLinker::State::RUNNING) {
+    return reply_error_(req, "409 Conflict", "Wait for the current BLE job to finish.");
+  }
+  const std::string mac = extract_json_str(read_body_(req), "mac");
+  std::vector<CloudClient::AccountDevice> devices;
+  std::string error;
+  if (!self->cloud_.list_devices(devices, error)) {
+    return reply_error_(req, "502 Bad Gateway", error);
+  }
+  const auto *lock = find_account_device_(devices, mac);
+  if (lock == nullptr || !is_supported_physical_lock_type(lock->device_type)) {
+    return reply_error_(req, "400 Bad Request", "Select a supported lock from your SwitchBot account.");
+  }
+  uint8_t key_id = 0;
+  {
+    // The cloud response includes the key alongside the slot. Only the slot
+    // leaves this scope, and the BLE probe sends no encrypted commands.
+    std::array<uint8_t, 16> unused_key{};
+    if (!fetch_comm_key_16_(self->cloud_, *lock, "lock session probe", key_id, unused_key, error)) {
+      return reply_error_(req, "502 Bad Gateway", error);
+    }
+  }
+  PhysicalLockClient client;
+  std::string reply;
+  if (!client.probe_session(lock->mac_pretty, key_id, reply, error)) {
+    return reply_error_(req, "502 Bad Gateway", error);
+  }
+  if (reply.size() < 4) {
+    return reply_error_(req, "502 Bad Gateway", "Lock session reply shorter than four bytes.");
+  }
+  const auto *bytes = reinterpret_cast<const uint8_t *>(reply.data());
+  const unsigned status = bytes[0];
+  const unsigned mode = bytes[2];
+  const char *trailer = "unclassified";
+  if (status == 1 && mode == 1 && reply.size() == 20) {
+    const uint8_t zero[4]{};
+    const uint8_t *tail = bytes + 16;
+    trailer = std::memcmp(tail, zero, sizeof(zero)) == 0 ? "all-zero" : "nonzero";
+  }
+  ESP_LOGI(TAG, "Lock session probe: status=0x%02X mode=0x%02X length=%zu trailer=%s",
+           status, mode, reply.size(), trailer);
+  cJSON *result = cJSON_CreateObject();
+  cJSON_AddNumberToObject(result, "status", status);
+  cJSON_AddNumberToObject(result, "mode", mode);
+  cJSON_AddNumberToObject(result, "length", reply.size());
+  cJSON_AddStringToObject(result, "trailer", trailer);
+  return reply_json_(req, json_take(result).c_str());
+}
+
 esp_err_t PairingUi::handle_lock_link_(httpd_req_t *req) {
   auto *self = static_cast<PairingUi *>(req->user_ctx);
   self->touch_activity_();
+  if (self->gcm_diagnostics_) {
+    return reply_error_(req, "409 Conflict", "Turn off gcm_diagnostics to link a lock.");
+  }
   std::string body = read_body_(req);
   std::string mac = extract_json_str(body, "mac");
   if (mac.empty()) {

@@ -223,9 +223,10 @@ void SwitchbotKeypadBridge::setup() {
       });
   // Setup mode: with no keypad linked yet, open the wizard right away
   // so the very first link needs no button press.
-  if (!have_keypad) {
+  if (!have_keypad || this->gcm_diagnostics_) {
     if (this->pairing_ui_.start()) {
-      ESP_LOGI(TAG, "No keypad linked — starting setup mode");
+      ESP_LOGI(TAG, "%s", have_keypad ? "Starting GCM diagnostics wizard"
+                                      : "No keypad linked — starting setup mode");
     } else {
       ESP_LOGW(TAG, "Setup UI failed to start; check port 80 is free");
     }

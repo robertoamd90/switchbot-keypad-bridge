@@ -4,6 +4,7 @@
 This is an investigation tool, not an implementation of keypad server rules.
 """
 import argparse
+from collections import Counter
 import glob
 import hmac
 import importlib.util
@@ -106,17 +107,26 @@ def analyze(trace_path, key_path):
             round_trip += 1
     if awaiting_reply:
         raise ValueError("last request has no reply")
-    print("GCM handshake parsed; trailing four bytes remain uninterpreted.")
+    trailer = handshake[16:20]
+    trailer_class = "all-zero" if trailer == bytes(4) else "nonzero"
+    print(f"GCM handshake parsed: four-byte trailer is {trailer_class} (meaning unknown).")
     # Candidate schedules only. Never select one automatically as firmware policy.
     for stride, reply_offset in ((1, 0), (1, 1), (2, 1)):
-        matches = 0
+        matched = Counter()
+        nonce_uses = Counter()
         for exchange, direction, wire in records:
             value = nonce_base + exchange * stride + (reply_offset if direction == "reply" else 0)
             if value >= 1 << 96:
                 raise ValueError("candidate nonce overflow")
-            matches += tag_matches(key, value.to_bytes(12, "big"), wire)
+            if tag_matches(key, value.to_bytes(12, "big"), wire):
+                matched[direction] += 1
+                nonce_uses[value] += 1
+        matches = sum(matched.values())
         print("candidate stride=%d reply_offset=%d: %d/%d tag-prefix matches" %
               (stride, reply_offset, matches, len(records)))
+        reused = sum(count > 1 for count in nonce_uses.values())
+        print(f"  requests={matched['request']}/{round_trip} replies={matched['reply']}/{round_trip}"
+              f" repeated_nonces_among_matches={reused}")
     print("16-bit matches are evidence, not proof. No slot binding or replay validation performed.")
     print("Split captures at handshakes; this analyzer does not infer rotation or retransmissions.")
 

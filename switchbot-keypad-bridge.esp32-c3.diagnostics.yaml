@@ -43,6 +43,7 @@ time:
 
 switchbot_keypad_bridge:
   id: keypad_bridge
+  gcm_diagnostics: true
   rearm_after: 20s
   keypad_action:
     name: Action

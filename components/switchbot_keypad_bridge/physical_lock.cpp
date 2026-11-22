@@ -249,6 +249,25 @@ bool PhysicalLockClient::send_plaintext_sequence(
     }
   }
 
+  return this->exchange_(config, commands, responses, error_out, progress, response_callback, nullptr);
+}
+
+bool PhysicalLockClient::probe_session(const std::string &mac, uint8_t key_id,
+                                       std::string &reply, std::string &error_out) {
+  Config config;
+  config.mac = mac;
+  config.key_id = key_id;
+  std::vector<std::vector<uint8_t>> unused_responses;
+  reply.clear();
+  return this->exchange_(config, {}, unused_responses, error_out, nullptr, nullptr, &reply);
+}
+
+bool PhysicalLockClient::exchange_(
+    const Config &config, const std::vector<std::vector<uint8_t>> &commands,
+    std::vector<std::vector<uint8_t>> &responses, std::string &error_out,
+    const ProgressCallback &progress, const ResponseCallback &response_callback,
+    std::string *session_probe_reply) {
+
   NimBLEClient *client = nullptr;
   NimBLERemoteCharacteristic *rx = nullptr;
   NimBLERemoteCharacteristic *tx = nullptr;
@@ -287,6 +306,9 @@ bool PhysicalLockClient::send_plaintext_sequence(
     error_out = "Could not request a lock encryption session.";
   } else if (!wait_notify(waiter, 3000, notify)) {
     error_out = "Lock did not open an encryption session.";
+  } else if (session_probe_reply != nullptr) {
+    *session_probe_reply = std::move(notify);
+    ok = true;
   } else if (this->parse_session_response_(notify, session, error_out)) {
     ok = true;
     for (const auto &cmd : commands) {
