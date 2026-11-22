@@ -278,7 +278,7 @@ class SwitchbotKeypadBridge : public Component {
   bool keypad_gcm_probe_active_{false};
   uint32_t keypad_gcm_probe_started_{0};
   uint8_t keypad_gcm_probe_slot_{0};
-  enum class KeypadGcmProbeStage : uint8_t { FIRST_FRAME, FOLLOW_UP, FINISHED };
+  enum class KeypadGcmProbeStage : uint8_t { FIRST_FRAME, WAIT_POLL, AFTER_POLL_REPLY, FINISHED };
   KeypadGcmProbeStage keypad_gcm_probe_stage_{KeypadGcmProbeStage::FIRST_FRAME};
   std::array<uint8_t, 20> keypad_gcm_probe_reply_{};
 

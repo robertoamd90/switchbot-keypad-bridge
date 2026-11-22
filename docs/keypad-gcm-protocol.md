@@ -186,6 +186,15 @@ since the keypad might use `N+2` later. A follow-up at `N+2` would be another
 nonce collision. A timeout would rule out this reply format for this run and
 leave the genuine SwitchBot response format as the next evidence to collect.
 
+The Keypad Touch 3.1 sent a valid state poll at `N+1` after the `N+2`
+reply. Neither `N` nor `N+2` matched the poll. The next diagnostic answers
+that poll once at `N+3` with the existing unlocked-state payload. It then
+observes a third frame, a new handshake or a disconnect. If a third frame
+matches `N+2` or `N+3`, the proposed schedule collides and must stay out of
+normal mode. A disconnect with no third frame bounds the observed exchange to
+four distinct nonce values. The keypad's LED or beep may provide additional
+evidence of its reaction to the final reply.
+
 A lock session response supplies real handshake bytes. Whether these can be
 served to a keypad, and whether a transparent central/peripheral relay can
 maintain a working conversation, still require a separate instrumented test.
