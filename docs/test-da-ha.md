@@ -41,12 +41,12 @@ Successivamente esegui i due tentativi di sblocco descritti piu sotto.
 Nel blocco esistente `switchbot_keypad_bridge`, aggiungi `gcm_diagnostics: true`
 e installa via Wi-Fi. L'esempio completo per C3 include gia questa impostazione.
 Apri il wizard del bridge, accedi a SwitchBot e vai nella scheda **Locks**.
-Scegli la serratura aggiornata vicina alla C3 e premi **Test session** per tre
-prove. Raccogli le tre righe `Lock session probe` o il risultato mostrato nella
-pagina, insieme a modello e firmware della serratura. Il test chiede solo una
-risposta di sessione BLE. Il dispositivo resta utilizzabile come bridge CTR con
-il keypad gia associato. Terminata la prova, puoi rimuovere `gcm_diagnostics`
-alla prossima compilazione per ripristinare l'apertura normale del wizard.
+Scegli la serratura aggiornata vicina alla C3 e premi **Test session**. Raccogli
+le righe `Lock session probe` e `Lock GCM status reply` o l'errore mostrato
+nella pagina, insieme a modello e firmware della serratura. Il test chiede una
+sessione BLE e, se la serratura offre GCM, legge lo stato della serratura.
+Terminata la prova, puoi rimuovere `gcm_diagnostics` alla prossima compilazione
+per ripristinare l'apertura normale del wizard.
 
 ## Modifica il dispositivo esistente
 

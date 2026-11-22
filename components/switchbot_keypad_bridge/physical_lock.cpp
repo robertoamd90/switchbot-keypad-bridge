@@ -6,6 +6,7 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <mbedtls/platform_util.h>
 
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
@@ -252,21 +253,46 @@ bool PhysicalLockClient::send_plaintext_sequence(
   return this->exchange_(config, commands, responses, error_out, progress, response_callback, nullptr);
 }
 
-bool PhysicalLockClient::probe_session(const std::string &mac, uint8_t key_id,
-                                       std::string &reply, std::string &error_out) {
-  Config config;
-  config.mac = mac;
-  config.key_id = key_id;
+bool PhysicalLockClient::probe_session(const Config &config, SessionProbe &probe,
+                                       std::string &error_out) {
   std::vector<std::vector<uint8_t>> unused_responses;
-  reply.clear();
-  return this->exchange_(config, {}, unused_responses, error_out, nullptr, nullptr, &reply);
+  probe = {};
+  return this->exchange_(config, {}, unused_responses, error_out, nullptr, nullptr, &probe);
+}
+
+void PhysicalLockClient::inspect_gcm_status_reply_(const Config &config, const Session &session,
+                                                   const std::string &wire, SessionProbe &probe) {
+  probe.response_length = wire.size();
+  if (wire.size() < WIRE_HEADER_LEN || wire.size() > 256) {
+    probe.status_query_error = "Unexpected lock-info reply length.";
+    return;
+  }
+  const auto *bytes = reinterpret_cast<const uint8_t *>(wire.data());
+  probe.response_status = bytes[0];
+  probe.response_header_byte1 = bytes[1];
+  if (wire.size() == WIRE_HEADER_LEN) {
+    probe.status_query_error = "Lock-info reply has no encrypted payload.";
+    return;
+  }
+  const uint8_t prefix[2] = {bytes[2], bytes[3]};
+  auto nonce = session.gcm_iv;
+  std::array<uint8_t, 256 - WIRE_HEADER_LEN> scratch;
+  const size_t payload_size = wire.size() - WIRE_HEADER_LEN;
+  for (uint8_t offset = 0; offset <= 2; ++offset) {
+    if (aes_gcm_decrypt_verify_prefix(config.key.data(), nonce.data(), bytes + WIRE_HEADER_LEN,
+                                      scratch.data(), payload_size, prefix)) {
+      probe.nonce_matches |= static_cast<uint8_t>(1U << offset);
+    }
+    mbedtls_platform_zeroize(scratch.data(), payload_size);
+    increment_gcm_iv(nonce);
+  }
 }
 
 bool PhysicalLockClient::exchange_(
     const Config &config, const std::vector<std::vector<uint8_t>> &commands,
     std::vector<std::vector<uint8_t>> &responses, std::string &error_out,
     const ProgressCallback &progress, const ResponseCallback &response_callback,
-    std::string *session_probe_reply) {
+    SessionProbe *session_probe) {
 
   NimBLEClient *client = nullptr;
   NimBLERemoteCharacteristic *rx = nullptr;
@@ -306,9 +332,23 @@ bool PhysicalLockClient::exchange_(
     error_out = "Could not request a lock encryption session.";
   } else if (!wait_notify(waiter, 3000, notify)) {
     error_out = "Lock did not open an encryption session.";
-  } else if (session_probe_reply != nullptr) {
-    *session_probe_reply = std::move(notify);
+  } else if (session_probe != nullptr) {
+    session_probe->announcement = std::move(notify);
     ok = true;
+    if (this->parse_session_response_(session_probe->announcement, session, session_probe->status_query_error) &&
+        session.mode == CryptoMode::GCM) {
+      size_t length = 0;
+      const auto *query = lock_info_plaintext(config.model, length);
+      if (query == nullptr) {
+        session_probe->status_query_error = "No read-only status query for this lock model.";
+      } else if (this->send_encrypted_(config, session, rx, query, length, session_probe->status_query_error, false)) {
+        if (wait_notify(waiter, 2500, notify)) {
+          this->inspect_gcm_status_reply_(config, session, notify, *session_probe);
+        } else {
+          session_probe->status_query_error = "No reply to the GCM lock-info query.";
+        }
+      }
+    }
   } else if (this->parse_session_response_(notify, session, error_out)) {
     ok = true;
     for (const auto &cmd : commands) {
@@ -558,7 +598,7 @@ bool PhysicalLockClient::send_encrypted_(const Config &config, const Session &se
                                          NimBLERemoteCharacteristic *rx,
                                          const uint8_t *plaintext,
                                          size_t plaintext_len,
-                                         std::string &error_out) {
+                                         std::string &error_out, bool log_frame) {
   std::vector<uint8_t> frame(WIRE_HEADER_LEN + plaintext_len);
   frame[0] = PROTOCOL_MAGIC;
   frame[1] = config.key_id;
@@ -584,8 +624,9 @@ bool PhysicalLockClient::send_encrypted_(const Config &config, const Session &se
     }
   }
 
-  ESP_LOGV(TAG, "TX lock %s",
-           format_hex_pretty(frame.data(), frame.size()).c_str());
+  if (log_frame) {
+    ESP_LOGV(TAG, "TX lock %s", format_hex_pretty(frame.data(), frame.size()).c_str());
+  }
   if (!rx->writeValue(frame.data(), frame.size(), /*response=*/true)) {
     error_out = "Could not write encrypted command to the lock.";
     return false;

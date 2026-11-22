@@ -1155,6 +1155,11 @@
       try {
         const data = await api('POST', '/api/lock/session-probe', { mac: device.mac });
         result.textContent = `Status ${data.status}, mode ${data.mode}, ${data.length} bytes, trailer ${data.trailer}`;
+        if (data.status_reply_length) {
+          const matches = ['N', 'N+1', 'N+2'].filter((_, i) => data.nonce_matches & (1 << i));
+          result.textContent += ` · State reply ${data.status_reply_length} bytes, status ${data.status_reply_code}, header byte 1 ${data.status_reply_byte1}, tag matches ${matches.join(', ') || 'none'}`;
+        }
+        if (data.status_query_error) result.textContent += ` · ${data.status_query_error}`;
       } catch (err) {
         result.textContent = err.message;
       } finally {

@@ -120,13 +120,14 @@ References:
 
 The opt-in `gcm_diagnostics: true` setting opens the wizard during startup even
 with an existing keypad association. Sign in, open **Locks**, and click
-**Test session** on a nearby updated lock from your account. This sends only
-the existing request for a session announcement. The cloud endpoint supplies
-the account slot alongside the communication key. The probe uses only the slot
-on BLE. It reports status, mode, total length and whether the reference GCM
-layout contains a zero or nonzero trailer. Repeat three times and record the
-results and lock firmware. This test does not send an encrypted state query or
-measure the runtime nonce progression.
+**Test session** on a nearby updated lock from your account. The original
+version requested only the session announcement. The current version also
+sends one read-only lock-info query when the lock announces GCM. It uses the
+account slot and communication key supplied by SwitchBot for that lock.
+It logs the response status, header byte 1, length, and whether the two-byte
+tag matches at `N`, `N+1`, or `N+2`. It never logs the nonce, key or payload
+for the diagnostic. This measures a genuine lock response to an account-slot
+query. It does not prove that the keypad slot uses the same rules.
 
 On 22 November 2026 the user ran the probe three times against the same
 updated lock. Each reply had status `0x01`, mode `0x01`, length 20, and an
@@ -219,6 +220,11 @@ unlock commands, and the keypad's Lock command. Test each method separately
 and record both the event result and any red or blinking keypad indicator.
 The event confirms what the bridge processed. It cannot confirm how the
 keypad interpreted the reply or its own indicator when the action ends.
+
+The user confirmed a red LED at the end of a repeated fingerprint attempt.
+The bridge-side unlock event and the keypad's visible outcome are separate
+acceptance criteria. Use the genuine lock reply data as the next reference
+before changing the response format or calling fingerprint operation reliable.
 
 The experimental mode allows one exchange on a single BLE connection. It
 checks both two-byte tag prefixes, the known frame sizes and command sequence,

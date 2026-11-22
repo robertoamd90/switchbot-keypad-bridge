@@ -49,10 +49,18 @@ class PhysicalLockClient {
   using CommandProgressCallback = std::function<void(size_t command_index)>;
   using ResponseCallback = std::function<void(const std::vector<uint8_t> &response)>;
 
-  // Request the lock's session announcement, then disconnect. Only the
-  // account slot is needed. No encrypted command or pairing write is sent.
-  bool probe_session(const std::string &mac, uint8_t key_id, std::string &reply,
-                     std::string &error_out);
+  struct SessionProbe {
+    std::string announcement;
+    std::string status_query_error;
+    size_t response_length{0};
+    uint8_t response_status{0};
+    uint8_t response_header_byte1{0};
+    uint8_t nonce_matches{0};  // bits 0–2 correspond to N through N+2
+  };
+
+  // Observe the session announcement and one GCM lock-info response. The
+  // query reads lock state using the account slot and key.
+  bool probe_session(const Config &config, SessionProbe &probe, std::string &error_out);
 
   // Verify that the configured key/slot can open an encrypted BLE session and
   // return a plausible lock-info payload.
@@ -94,7 +102,7 @@ class PhysicalLockClient {
   bool exchange_(const Config &config, const std::vector<std::vector<uint8_t>> &commands,
                  std::vector<std::vector<uint8_t>> &responses, std::string &error_out,
                  const ProgressCallback &progress, const ResponseCallback &response_callback,
-                 std::string *session_probe_reply);
+                 SessionProbe *session_probe);
   enum class CryptoMode : uint8_t { CTR, GCM };
 
   struct Session {
@@ -102,6 +110,9 @@ class PhysicalLockClient {
     std::array<uint8_t, 16> ctr_iv{};
     std::array<uint8_t, 12> gcm_iv{};
   };
+
+  void inspect_gcm_status_reply_(const Config &config, const Session &session,
+                                 const std::string &wire, SessionProbe &probe);
 
   bool connect_(const Config &config, NimBLEClient *&client,
                 NimBLERemoteCharacteristic *&rx,
@@ -112,7 +123,7 @@ class PhysicalLockClient {
                                std::string &error_out);
   bool send_encrypted_(const Config &config, const Session &session,
                        NimBLERemoteCharacteristic *rx, const uint8_t *plaintext,
-                       size_t plaintext_len, std::string &error_out);
+                       size_t plaintext_len, std::string &error_out, bool log_frame = true);
   bool decrypt_notify_(const Config &config, const Session &session,
                        const std::string &wire, std::vector<uint8_t> &out,
                        std::string &error_out);

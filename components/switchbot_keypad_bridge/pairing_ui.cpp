@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <cJSON.h>
+#include <mbedtls/platform_util.h>
 
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
@@ -495,20 +496,20 @@ esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {
   if (lock == nullptr || !is_supported_physical_lock_type(lock->device_type)) {
     return reply_error_(req, "400 Bad Request", "Select a supported lock from your SwitchBot account.");
   }
-  uint8_t key_id = 0;
-  {
-    // The cloud response includes the key alongside the slot. Only the slot
-    // leaves this scope, and the BLE probe sends no encrypted commands.
-    std::array<uint8_t, 16> unused_key{};
-    if (!fetch_comm_key_16_(self->cloud_, *lock, "lock session probe", key_id, unused_key, error)) {
-      return reply_error_(req, "502 Bad Gateway", error);
-    }
-  }
-  PhysicalLockClient client;
-  std::string reply;
-  if (!client.probe_session(lock->mac_pretty, key_id, reply, error)) {
+  PhysicalLockClient::Config config;
+  config.mac = lock->mac_pretty;
+  config.model = physical_lock_model_from_api_type(lock->device_type);
+  if (!fetch_comm_key_16_(self->cloud_, *lock, "lock session probe", config.key_id, config.key, error)) {
     return reply_error_(req, "502 Bad Gateway", error);
   }
+  PhysicalLockClient client;
+  PhysicalLockClient::SessionProbe probe;
+  const bool connected = client.probe_session(config, probe, error);
+  mbedtls_platform_zeroize(config.key.data(), config.key.size());
+  if (!connected) {
+    return reply_error_(req, "502 Bad Gateway", error);
+  }
+  const auto &reply = probe.announcement;
   if (reply.size() < 4) {
     return reply_error_(req, "502 Bad Gateway", "Lock session reply shorter than four bytes.");
   }
@@ -528,6 +529,20 @@ esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {
   cJSON_AddNumberToObject(result, "mode", mode);
   cJSON_AddNumberToObject(result, "length", reply.size());
   cJSON_AddStringToObject(result, "trailer", trailer);
+  if (probe.response_length != 0) {
+    ESP_LOGI(TAG, "Lock GCM status reply: status=0x%02X byte1=0x%02X length=%zu N=%s N+1=%s N+2=%s",
+             static_cast<unsigned>(probe.response_status), static_cast<unsigned>(probe.response_header_byte1),
+             probe.response_length, (probe.nonce_matches & 1) ? "match" : "no",
+             (probe.nonce_matches & 2) ? "match" : "no", (probe.nonce_matches & 4) ? "match" : "no");
+    cJSON_AddNumberToObject(result, "status_reply_length", probe.response_length);
+    cJSON_AddNumberToObject(result, "status_reply_code", probe.response_status);
+    cJSON_AddNumberToObject(result, "status_reply_byte1", probe.response_header_byte1);
+    cJSON_AddNumberToObject(result, "nonce_matches", probe.nonce_matches);
+  }
+  if (!probe.status_query_error.empty()) {
+    ESP_LOGW(TAG, "Lock GCM status query: %s", probe.status_query_error.c_str());
+    cJSON_AddStringToObject(result, "status_query_error", probe.status_query_error.c_str());
+  }
   return reply_json_(req, json_take(result).c_str());
 }
 
