@@ -504,7 +504,8 @@ esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {
   }
   PhysicalLockClient client;
   PhysicalLockClient::SessionProbe probe;
-  const bool connected = client.probe_session(config, probe, error);
+  const auto keypad_poll_suffix = self->keypad_poll_suffix_.load();
+  const bool connected = client.probe_session(config, probe, error, false, keypad_poll_suffix);
   mbedtls_platform_zeroize(config.key.data(), config.key.size());
   if (!connected) {
     return reply_error_(req, "502 Bad Gateway", error);
@@ -534,15 +535,18 @@ esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {
     const auto &status_reply = probe.replies[i];
     if (status_reply.response_length == 0)
       break;
-    ESP_LOGI(TAG, "Lock GCM status reply #%zu: request=N+%zu status=0x%02X slot_echo=%s length=%zu tag_offsets=%u",
-             i + 1, i, static_cast<unsigned>(status_reply.response_status),
+    ESP_LOGI(TAG, "Lock GCM status reply #%zu: query=%s request=N+%zu status=0x%02X slot_echo=%s length=%zu tag_offsets=%u keypad_shape=%s",
+             i + 1, status_reply.keypad_poll ? "keypad-poll" : "lock-info", i,
+             static_cast<unsigned>(status_reply.response_status),
              status_reply.response_header_byte1 == config.key_id ? "yes" : "no", status_reply.response_length,
-             static_cast<unsigned>(status_reply.nonce_matches));
+             static_cast<unsigned>(status_reply.nonce_matches), status_reply.keypad_state_shape ? "yes" : "no");
     cJSON *item = cJSON_CreateObject();
     cJSON_AddNumberToObject(item, "length", status_reply.response_length);
     cJSON_AddNumberToObject(item, "status", status_reply.response_status);
     cJSON_AddBoolToObject(item, "slot_echo", status_reply.response_header_byte1 == config.key_id);
     cJSON_AddNumberToObject(item, "nonce_matches", status_reply.nonce_matches);
+    cJSON_AddBoolToObject(item, "keypad_poll", status_reply.keypad_poll);
+    cJSON_AddBoolToObject(item, "keypad_shape", status_reply.keypad_state_shape);
     cJSON_AddItemToArray(status_replies, item);
   }
   if (!probe.status_query_error.empty()) {

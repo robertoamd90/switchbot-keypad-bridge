@@ -254,10 +254,11 @@ bool PhysicalLockClient::send_plaintext_sequence(
 }
 
 bool PhysicalLockClient::probe_session(const Config &config, SessionProbe &probe,
-                                       std::string &error_out, bool announcement_only) {
+                                       std::string &error_out, bool announcement_only, int16_t keypad_poll_suffix) {
   std::vector<std::vector<uint8_t>> unused_responses;
   probe = {};
-  return this->exchange_(config, {}, unused_responses, error_out, nullptr, nullptr, &probe, announcement_only);
+  return this->exchange_(config, {}, unused_responses, error_out, nullptr, nullptr, &probe,
+                         announcement_only, keypad_poll_suffix);
 }
 
 void PhysicalLockClient::inspect_gcm_status_reply_(const Config &config, const Session &session,
@@ -283,6 +284,8 @@ void PhysicalLockClient::inspect_gcm_status_reply_(const Config &config, const S
     if (aes_gcm_decrypt_verify_prefix(config.key.data(), nonce.data(), bytes + WIRE_HEADER_LEN,
                                       scratch.data(), payload_size, prefix)) {
       probe.nonce_matches |= static_cast<uint8_t>(1U << offset);
+      probe.keypad_state_shape |= payload_size == 14 && scratch[1] == 0x08 &&
+          scratch[3] == 0x41 && scratch[8] == 0x80;
     }
     mbedtls_platform_zeroize(scratch.data(), payload_size);
     increment_gcm_iv(nonce);
@@ -293,7 +296,7 @@ bool PhysicalLockClient::exchange_(
     const Config &config, const std::vector<std::vector<uint8_t>> &commands,
     std::vector<std::vector<uint8_t>> &responses, std::string &error_out,
     const ProgressCallback &progress, const ResponseCallback &response_callback,
-    SessionProbe *session_probe, bool announcement_only) {
+    SessionProbe *session_probe, bool announcement_only, int16_t keypad_poll_suffix) {
 
   NimBLEClient *client = nullptr;
   NimBLERemoteCharacteristic *rx = nullptr;
@@ -345,11 +348,16 @@ bool PhysicalLockClient::exchange_(
       if (query == nullptr) {
         probe_error = "No read-only status query for this lock model.";
       } else {
-        for (auto &reply : session_probe->replies) {
-          if (!this->send_encrypted_(config, session, rx, query, length, probe_error, false))
+        const uint8_t poll[4] = {0x0F, 0x4F, 0x81, static_cast<uint8_t>(keypad_poll_suffix)};
+        for (size_t i = 0; i < session_probe->replies.size(); ++i) {
+          auto &reply = session_probe->replies[i];
+          reply.keypad_poll = i == 1 && keypad_poll_suffix >= 0 && keypad_poll_suffix <= 0xFF;
+          if (!this->send_encrypted_(config, session, rx, reply.keypad_poll ? poll : query,
+                                     reply.keypad_poll ? sizeof(poll) : length, probe_error, false))
             break;
           if (!wait_notify(waiter, 2500, notify)) {
-            probe_error = "No reply to the GCM lock-info query.";
+            probe_error = reply.keypad_poll ? "No reply to the GCM keypad-style poll."
+                                             : "No reply to the GCM lock-info query.";
             break;
           }
           this->inspect_gcm_status_reply_(config, session, notify, reply, probe_error);

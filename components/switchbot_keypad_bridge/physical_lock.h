@@ -54,6 +54,8 @@ class PhysicalLockClient {
     uint8_t response_status{0};
     uint8_t response_header_byte1{0};
     uint8_t nonce_matches{0};  // bits 0–2 relative to this request's nonce
+    bool keypad_poll{false};
+    bool keypad_state_shape{false};
   };
 
   struct SessionProbe {
@@ -65,7 +67,7 @@ class PhysicalLockClient {
   // Observe the session announcement and one GCM lock-info response. The
   // query reads lock state using the account slot and key.
   bool probe_session(const Config &config, SessionProbe &probe, std::string &error_out,
-                     bool announcement_only = false);
+                     bool announcement_only = false, int16_t keypad_poll_suffix = -1);
 
   // Verify that the configured key/slot can open an encrypted BLE session and
   // return a plausible lock-info payload.
@@ -107,7 +109,7 @@ class PhysicalLockClient {
   bool exchange_(const Config &config, const std::vector<std::vector<uint8_t>> &commands,
                  std::vector<std::vector<uint8_t>> &responses, std::string &error_out,
                  const ProgressCallback &progress, const ResponseCallback &response_callback,
-                 SessionProbe *session_probe, bool announcement_only = false);
+                 SessionProbe *session_probe, bool announcement_only = false, int16_t keypad_poll_suffix = -1);
   enum class CryptoMode : uint8_t { CTR, GCM };
 
   struct Session {

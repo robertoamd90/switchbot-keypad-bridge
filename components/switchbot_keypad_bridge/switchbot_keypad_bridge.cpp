@@ -724,12 +724,15 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
   const uint8_t prefix[2] = {wire[2], wire[3]};
   std::array<uint8_t, 12> initial_nonce;
   std::memcpy(initial_nonce.data(), this->keypad_gcm_probe_reply_.data() + 4, initial_nonce.size());
-  auto check_at = [&](const std::array<uint8_t, 12> &nonce, DecodedCommand &command) {
+  auto check_at = [&](const std::array<uint8_t, 12> &nonce, DecodedCommand &command, uint8_t *poll_suffix = nullptr) {
     uint8_t scratch[LockSession::MAX_PAYLOAD];
     const size_t length = frame.size() - LockSession::HEADER_LEN;
     const bool match = aes_gcm_decrypt_verify_prefix(this->shared_key_.data(), nonce.data(),
         wire + LockSession::HEADER_LEN, scratch, length, prefix);
     command = match ? decode_lock_command(scratch, length) : DecodedCommand{};
+    if (poll_suffix != nullptr && command.type == CommandType::STATE_POLL) {
+      *poll_suffix = scratch[3];  // Valid state polls have four bytes.
+    }
     mbedtls_platform_zeroize(scratch, sizeof(scratch));
     return match;
   };
@@ -773,7 +776,8 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
   const bool match = check_at(initial_nonce, initial_command);
   if (stage == KeypadGcmProbeStage::WAIT_POLL) {
     DecodedCommand plus_one_command, plus_two_command;
-    const bool plus_one = check_at(nonces[1], plus_one_command);
+    uint8_t poll_suffix = 0;
+    const bool plus_one = check_at(nonces[1], plus_one_command, &poll_suffix);
     const bool plus_two = check_at(nonces[2], plus_two_command);
     ESP_LOGI(TAG, "Keypad GCM probe: N+2 reply follow-up length=%zu N=%s N+1=%s N+2=%s poll_at_N+1=%s poll_at_N+2=%s",
              frame.size(), match ? "match" : "no", plus_one ? "match" : "no",
@@ -781,6 +785,10 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
              plus_two_command.type == CommandType::STATE_POLL ? "yes" : "no");
     this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
     if (plus_one && plus_one_command.type == CommandType::STATE_POLL && !match && !plus_two) {
+      if (this->gcm_diagnostics_) {
+        this->pairing_ui_.record_keypad_poll_suffix(poll_suffix);
+        ESP_LOGI(TAG, "Keypad GCM: captured state poll format for lock comparison");
+      }
       uint8_t state_payload[1 + sizeof(STATE_PAYLOAD_TAIL)];
       const auto state = this->keypad_gcm_command_.type == CommandType::LOCK
                             ? KeypadState::LockState::LOCKED : KeypadState::LockState::UNLOCKED;

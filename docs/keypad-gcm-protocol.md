@@ -267,6 +267,21 @@ the first write if the lock negotiates GCM for that multi-command sequence.
 Do not interpret a successful status preflight as permission to use the old
 provisioning behavior on an installed lock.
 
+The preflight on the installed lock produced two 20-byte account replies
+with `slot_echo=yes` and `tag_offsets=1`. The value is a bit mask, so both
+replies matched at offset zero from their own request nonce, first `N` and
+then `N+1`. A direct announcement request to slot `0x88` returned a four-byte
+reply with status `0x02`. This does not identify the reason for rejection or
+the slot used by the lock's existing keypad.
+
+The next read-only probe records the selector byte from an authenticated
+state poll sent by the dedicated keypad to the C3. It uses that identical
+query on the account slot as the second read, after the initial lock-info
+reply matches. It reports length and a structural check against the legacy
+14-byte keypad state body, without logging decrypted bytes. This compares the
+query itself independently of the slot change. It cannot prove the original
+keypad-slot response nonce.
+
 The experimental mode allows one exchange on a single BLE connection. It
 checks both two-byte tag prefixes, the known frame sizes and command sequence,
 and publishes the action event only after the poll reply was sent and

@@ -1157,7 +1157,7 @@
         result.textContent = `Status ${data.status}, mode ${data.mode}, ${data.length} bytes, trailer ${data.trailer}`;
         for (const [index, reply] of (data.status_replies || []).entries()) {
           const offsets = [0, 1, 2].filter(i => reply.nonce_matches & (1 << i));
-          result.textContent += ` · State reply ${index + 1}: ${reply.length} bytes, status ${reply.status}, slot echo ${reply.slot_echo ? 'yes' : 'no'}, tag offsets ${offsets.join(', ') || 'none'}`;
+          result.textContent += ` · ${reply.keypad_poll ? 'Keypad poll' : 'Lock info'} reply ${index + 1}: ${reply.length} bytes, status ${reply.status}, slot echo ${reply.slot_echo ? 'yes' : 'no'}, tag offsets ${offsets.join(', ') || 'none'}, keypad state shape ${reply.keypad_shape ? 'yes' : 'no'}`;
         }
         if (data.status_query_error) result.textContent += ` · ${data.status_query_error}`;
         if (data.keypad_slot_length) {
