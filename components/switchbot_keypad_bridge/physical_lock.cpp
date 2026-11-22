@@ -286,6 +286,9 @@ void PhysicalLockClient::inspect_gcm_status_reply_(const Config &config, const S
       probe.nonce_matches |= static_cast<uint8_t>(1U << offset);
       probe.keypad_state_shape |= payload_size == 14 && scratch[1] == 0x08 &&
           scratch[3] == 0x41 && scratch[8] == 0x80;
+      if (probe.keypad_poll && offset == 0 && payload_size == probe.keypad_state.size()) {
+        std::copy_n(scratch.begin(), probe.keypad_state.size(), probe.keypad_state.begin());
+      }
     }
     mbedtls_platform_zeroize(scratch.data(), payload_size);
     increment_gcm_iv(nonce);

@@ -291,6 +291,8 @@ class SwitchbotKeypadBridge : public Component {
   uint32_t keypad_gcm_failures_since_{0};
   uint8_t keypad_gcm_failures_{0};
   DecodedCommand keypad_gcm_command_{};
+  bool keypad_gcm_reference_active_{false};
+  std::array<uint8_t, 14> keypad_gcm_reference_state_{};
 
   PhysicalLockClient physical_lock_client_{};
   LinkedLockInfo linked_lock_info_{};

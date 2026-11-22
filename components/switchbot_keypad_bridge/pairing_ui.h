@@ -58,6 +58,7 @@ class PairingUi {
   void record_keypad_poll_suffix(uint8_t suffix) { this->keypad_poll_suffix_.store(suffix); }
   void set_keypad_gcm_experimental(bool enabled) { this->keypad_gcm_experimental_ = enabled; }
   bool take_keypad_probe_request() { return this->keypad_probe_requested_.exchange(false); }
+  bool take_keypad_reference_probe(std::array<uint8_t, 14> &state);
 
   // The embedded UI page, gzip-compressed and baked into flash by codegen
   // (see __init__.py); served verbatim with Content-Encoding: gzip.
@@ -108,6 +109,7 @@ class PairingUi {
   static esp_err_t handle_locks_(httpd_req_t *req);
   static esp_err_t handle_lock_session_probe_(httpd_req_t *req);
   static esp_err_t handle_keypad_session_probe_(httpd_req_t *req);
+  static esp_err_t handle_keypad_reference_probe_(httpd_req_t *req);
   static esp_err_t handle_lock_link_(httpd_req_t *req);
   static esp_err_t handle_lock_link_status_(httpd_req_t *req);
 
@@ -123,6 +125,12 @@ class PairingUi {
   std::atomic<int16_t> keypad_poll_suffix_{-1};
   bool keypad_gcm_experimental_{false};
   std::atomic<bool> keypad_probe_requested_{false};
+  std::mutex keypad_reference_mu_;
+  std::array<uint8_t, 14> keypad_reference_state_{};
+  uint32_t keypad_reference_read_at_{0};
+  uint32_t keypad_reference_armed_at_{0};
+  bool keypad_reference_available_{false};
+  bool keypad_reference_armed_{false};
   CloudClient    cloud_{};
   KeypadPairer   pairer_{};
   LockLinker     linker_{};

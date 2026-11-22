@@ -683,6 +683,10 @@
       <button id="keypad-gcm-probe-btn" class="btn btn-secondary">Test keypad GCM</button>
       <p id="keypad-gcm-probe-status" role="status" class="subtitle"></p>
     </div>
+    <div id="keypad-reference-probe" class="hidden">
+      <button id="keypad-reference-probe-btn" class="btn btn-secondary">Test keypad with lock reply</button>
+      <p id="keypad-reference-probe-status" role="status" class="subtitle"></p>
+    </div>
 
     <div class="keypads-list" id="locks-list">
       <div class="empty-state">Sign in to load locks.</div>
@@ -979,6 +983,10 @@
         document.getElementById('keypad-gcm-probe').classList.remove('hidden');
         document.getElementById('locks-subtitle').textContent = 'Test BLE session announcements here.';
       }
+      if (login.keypad_reference_probe) {
+        document.getElementById('keypad-reference-probe').classList.remove('hidden');
+        document.getElementById('locks-subtitle').textContent = 'Compare replies from an updated SwitchBot lock.';
+      }
       // Land on the first incomplete step; with everything done the Keypad
       // tab shows its completed state.
       if (keypadPaired && !lockLinked) {
@@ -1009,6 +1017,20 @@
         status.textContent = 'Test window ended. See the ESPHome logs for the result.';
         button.disabled = false;
       }, 30000);
+    } catch (err) {
+      status.textContent = err.message;
+      button.disabled = false;
+    }
+  });
+
+  document.getElementById('keypad-reference-probe-btn').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    const status = document.getElementById('keypad-reference-probe-status');
+    button.disabled = true;
+    try {
+      await api('POST', '/api/keypad/reference-probe');
+      status.textContent = 'Use one fingerprint within 30 seconds and note the LED and beeps.';
+      setTimeout(() => { button.disabled = false; }, 30000);
     } catch (err) {
       status.textContent = err.message;
       button.disabled = false;
@@ -1164,6 +1186,7 @@
           result.textContent += ` · Keypad slot: status ${data.keypad_slot_status}, mode ${data.keypad_slot_mode}, ${data.keypad_slot_length} bytes`;
         }
         if (data.keypad_slot_error) result.textContent += ` · ${data.keypad_slot_error}`;
+        if (data.reference_available) result.textContent += ' · Reference reply ready for the keypad test.';
       } catch (err) {
         result.textContent = err.message;
       } finally {

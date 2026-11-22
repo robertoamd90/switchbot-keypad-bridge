@@ -282,6 +282,16 @@ reply matches. It reports length and a structural check against the legacy
 query itself independently of the slot change. It cannot prove the original
 keypad-slot response nonce.
 
+The genuine lock answered that query with 18 wire bytes and a tag match at
+offset zero. The 14-byte state body did not match the legacy structural check.
+The reference-reply test keeps an authenticated body in RAM for two minutes.
+Explicitly arming **Test keypad with lock reply** applies that body to a single
+subsequent fingerprint exchange, using the same `N+3` nonce as the synthetic
+poll reply. It suspends events for that exchange. Read the reference while the
+physical lock is unlocked so that the snapshot reflects the intended state.
+The observed keypad indication is the result. No change in indication would
+leave reply nonce, unlock reply content and slot-specific semantics open.
+
 The experimental mode allows one exchange on a single BLE connection. It
 checks both two-byte tag prefixes, the known frame sizes and command sequence,
 and publishes the action event only after the poll reply was sent and

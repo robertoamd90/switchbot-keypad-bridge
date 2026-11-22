@@ -73,6 +73,7 @@ bool PairingUi::start(uint16_t port) {
   if (this->gcm_diagnostics_) {
     reg("/api/lock/session-probe", HTTP_POST, PairingUi::handle_lock_session_probe_);
     reg("/api/keypad/session-probe", HTTP_POST, PairingUi::handle_keypad_session_probe_);
+    reg("/api/keypad/reference-probe", HTTP_POST, PairingUi::handle_keypad_reference_probe_);
   }
   reg("/api/lock/link",        HTTP_POST, PairingUi::handle_lock_link_);
   reg("/api/lock/link/status", HTTP_GET,  PairingUi::handle_lock_link_status_);
@@ -350,6 +351,8 @@ esp_err_t PairingUi::handle_login_(httpd_req_t *req) {
   cJSON_AddBoolToObject(resp, "lock_linked", self->lock_linked_.load());
   cJSON_AddBoolToObject(resp, "keypad_session_probe", self->gcm_diagnostics_ && !self->keypad_gcm_experimental_ &&
                           self->keypad_paired_.load() && !self->lock_linked_.load());
+  cJSON_AddBoolToObject(resp, "keypad_reference_probe", self->gcm_diagnostics_ && self->keypad_gcm_experimental_ &&
+                          self->keypad_paired_.load() && !self->lock_linked_.load());
   return reply_json_(req, json_take(resp).c_str());
 }
 
@@ -476,6 +479,43 @@ esp_err_t PairingUi::handle_keypad_session_probe_(httpd_req_t *req) {
   return reply_json_(req, "{}");
 }
 
+bool PairingUi::take_keypad_reference_probe(std::array<uint8_t, 14> &state) {
+  const std::lock_guard<std::mutex> lock(this->keypad_reference_mu_);
+  if (!this->keypad_reference_armed_) {
+    return false;
+  }
+  this->keypad_reference_armed_ = false;
+  if (millis() - this->keypad_reference_armed_at_ >= 30000) {
+    return false;
+  }
+  state = this->keypad_reference_state_;
+  return true;
+}
+
+esp_err_t PairingUi::handle_keypad_reference_probe_(httpd_req_t *req) {
+  auto *self = static_cast<PairingUi *>(req->user_ctx);
+  self->touch_activity_();
+  if (!self->cloud_.is_logged_in()) {
+    return reply_error_(req, "401 Unauthorized", "Sign in first.");
+  }
+  if (!self->keypad_gcm_experimental_ || !self->keypad_paired_.load() || self->lock_linked_.load()) {
+    return reply_error_(req, "409 Conflict", "Enable standalone experimental GCM for this test.");
+  }
+  bool armed = false;
+  {
+    const std::lock_guard<std::mutex> lock(self->keypad_reference_mu_);
+    if (self->keypad_reference_available_ && millis() - self->keypad_reference_read_at_ < 120000) {
+      self->keypad_reference_armed_ = true;
+      self->keypad_reference_armed_at_ = millis();
+      armed = true;
+    }
+  }
+  if (armed) {
+    return reply_json_(req, "{}");
+  }
+  return reply_error_(req, "409 Conflict", "Read a fresh keypad-poll reply using Test session first.");
+}
+
 esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {
   auto *self = static_cast<PairingUi *>(req->user_ctx);
   self->touch_activity_();
@@ -495,6 +535,11 @@ esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {
   const auto *lock = find_account_device_(devices, mac);
   if (lock == nullptr || !is_supported_physical_lock_type(lock->device_type)) {
     return reply_error_(req, "400 Bad Request", "Select a supported lock from your SwitchBot account.");
+  }
+  {
+    const std::lock_guard<std::mutex> lock(self->keypad_reference_mu_);
+    self->keypad_reference_available_ = false;
+    self->keypad_reference_armed_ = false;
   }
   PhysicalLockClient::Config config;
   config.mac = lock->mac_pretty;
@@ -531,6 +576,7 @@ esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {
   cJSON_AddNumberToObject(result, "length", reply.size());
   cJSON_AddStringToObject(result, "trailer", trailer);
   cJSON *status_replies = cJSON_AddArrayToObject(result, "status_replies");
+  bool reference_available = false;
   for (size_t i = 0; i < probe.replies.size(); ++i) {
     const auto &status_reply = probe.replies[i];
     if (status_reply.response_length == 0)
@@ -548,7 +594,16 @@ esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {
     cJSON_AddBoolToObject(item, "keypad_poll", status_reply.keypad_poll);
     cJSON_AddBoolToObject(item, "keypad_shape", status_reply.keypad_state_shape);
     cJSON_AddItemToArray(status_replies, item);
+    if (status_reply.keypad_poll && status_reply.response_status == 1 && status_reply.nonce_matches == 1 &&
+        status_reply.response_header_byte1 == config.key_id && status_reply.response_length == 18) {
+      const std::lock_guard<std::mutex> lock(self->keypad_reference_mu_);
+      self->keypad_reference_state_ = status_reply.keypad_state;
+      self->keypad_reference_read_at_ = millis();
+      self->keypad_reference_available_ = true;
+      reference_available = true;
+    }
   }
+  cJSON_AddBoolToObject(result, "reference_available", reference_available);
   if (!probe.status_query_error.empty()) {
     ESP_LOGW(TAG, "Lock GCM status query: %s", probe.status_query_error.c_str());
     cJSON_AddStringToObject(result, "status_query_error", probe.status_query_error.c_str());

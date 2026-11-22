@@ -56,6 +56,7 @@ class PhysicalLockClient {
     uint8_t nonce_matches{0};  // bits 0–2 relative to this request's nonce
     bool keypad_poll{false};
     bool keypad_state_shape{false};
+    std::array<uint8_t, 14> keypad_state{};
   };
 
   struct SessionProbe {
