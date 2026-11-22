@@ -135,7 +135,8 @@ class PhysicalLockClient {
                                std::string &error_out);
   bool send_encrypted_(const Config &config, const Session &session,
                        NimBLERemoteCharacteristic *rx, const uint8_t *plaintext,
-                       size_t plaintext_len, std::string &error_out, bool log_frame = true);
+                       size_t plaintext_len, std::string &error_out, bool log_frame = true,
+                       std::array<uint8_t, 2> *sent_prefix = nullptr);
   bool decrypt_notify_(const Config &config, const Session &session,
                        const std::string &wire, std::vector<uint8_t> &out,
                        std::string &error_out);

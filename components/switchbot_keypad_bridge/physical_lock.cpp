@@ -516,7 +516,9 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
 
     auto exchange_command = [&](const uint8_t *data, size_t length,
                                 std::vector<uint8_t> &response) {
-      if (!this->send_encrypted_(config, session, rx, data, length, error_out, !gcm_slot_test)) {
+      std::array<uint8_t, 2> sent_prefix{};
+      if (!this->send_encrypted_(config, session, rx, data, length, error_out, !gcm_slot_test,
+                                 gcm_slot_test ? &sent_prefix : nullptr)) {
         return false;
       }
       if (!wait_notify(waiter, 2500, notify)) {
@@ -541,6 +543,16 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
                                          payload_len ? bytes + WIRE_HEADER_LEN : &empty_input,
                                          payload_len ? response.data() : &empty_output,
                                          payload_len, prefix)) {
+        if (payload_len == 0) {
+          auto next_iv = session.gcm_iv;
+          const bool next_tag = increment_gcm_iv(next_iv) &&
+              aes_gcm_decrypt_verify_prefix(config.key.data(), next_iv.data(), &empty_input,
+                                            &empty_output, 0, prefix);
+          ESP_LOGW(TAG, "Empty GCM reply: rx=%02X %02X %02X %02X tx_prefix=%02X %02X echo=%s zero=%s next_tag=%s",
+                   bytes[0], bytes[1], bytes[2], bytes[3], sent_prefix[0], sent_prefix[1],
+                   bytes[2] == sent_prefix[0] && bytes[3] == sent_prefix[1] ? "yes" : "no",
+                   bytes[2] == 0 && bytes[3] == 0 ? "yes" : "no", next_tag ? "yes" : "no");
+        }
         error_out = "Lock response did not match the tag for this request's nonce"
                     " (wire_bytes=" + std::to_string(notify.size()) +
                     ", payload_bytes=" + std::to_string(payload_len) + ").";
@@ -737,7 +749,8 @@ bool PhysicalLockClient::send_encrypted_(const Config &config, const Session &se
                                          NimBLERemoteCharacteristic *rx,
                                          const uint8_t *plaintext,
                                          size_t plaintext_len,
-                                         std::string &error_out, bool log_frame) {
+                                         std::string &error_out, bool log_frame,
+                                         std::array<uint8_t, 2> *sent_prefix) {
   std::vector<uint8_t> frame(WIRE_HEADER_LEN + plaintext_len);
   frame[0] = PROTOCOL_MAGIC;
   frame[1] = config.key_id;
@@ -763,6 +776,7 @@ bool PhysicalLockClient::send_encrypted_(const Config &config, const Session &se
     }
   }
 
+  if (sent_prefix != nullptr) *sent_prefix = {frame[2], frame[3]};
   if (log_frame) {
     ESP_LOGV(TAG, "TX lock %s", format_hex_pretty(frame.data(), frame.size()).c_str());
   }
