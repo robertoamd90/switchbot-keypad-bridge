@@ -341,6 +341,11 @@ bool PhysicalLockClient::exchange_(
   } else if (!wait_notify(waiter, 3000, notify)) {
     error_out = "Lock did not open an encryption session.";
   } else if (session_probe != nullptr) {
+    if (!announcement_only) {
+      const auto link = client->getConnInfo();
+      ESP_LOGI(TAG, "Lock slot status-only ACK eligible on this connection: %s",
+               link.isEncrypted() && link.isAuthenticated() ? "yes" : "no");
+    }
     session_probe->announcement = std::move(notify);
     ok = true;
     if (!announcement_only &&
@@ -515,7 +520,7 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
     }
 
     auto exchange_command = [&](const uint8_t *data, size_t length,
-                                std::vector<uint8_t> &response) {
+                                std::vector<uint8_t> &response, bool opening_slot = false) {
       std::array<uint8_t, 2> sent_prefix{};
       if (!this->send_encrypted_(config, session, rx, data, length, error_out, !gcm_slot_test,
                                  gcm_slot_test ? &sent_prefix : nullptr)) {
@@ -536,9 +541,15 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
       }
       const size_t payload_len = notify.size() - WIRE_HEADER_LEN;
       const uint8_t prefix[2] = {bytes[2], bytes[3]};
-      // Some provisioning replies have an empty body but still need a valid tag.
-      uint8_t empty_input = 0, empty_output = 0;
       response.resize(payload_len);
+      if (opening_slot && payload_len == 0 && prefix[0] == 0 && prefix[1] == 0) {
+        const auto link = client->getConnInfo();
+        if (link.isEncrypted() && link.isAuthenticated()) {
+          ESP_LOGI(TAG, "Lock slot opening acknowledged by status on authenticated BLE link");
+          return true;
+        }
+      }
+      uint8_t empty_input = 0, empty_output = 0;
       if (!aes_gcm_decrypt_verify_prefix(config.key.data(), session.gcm_iv.data(),
                                          payload_len ? bytes + WIRE_HEADER_LEN : &empty_input,
                                          payload_len ? response.data() : &empty_output,
@@ -604,7 +615,9 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
       }
       std::vector<uint8_t> response;
       write_attempted |= provisioning;
-      if (!exchange_command(cmd.data(), cmd.size(), response)) {
+      const bool opening_slot = provisioning && i == 0 && cmd.size() == 4 &&
+          cmd[0] == 0x0F && cmd[1] == 0x20 && cmd[2] == 0x09 && cmd[3] == shared_config.key_id;
+      if (!exchange_command(cmd.data(), cmd.size(), response, opening_slot)) {
         if (gcm_slot_test && provisioning) {
           error_out = "GCM write " + std::to_string(i + 1) + ": " + error_out;
         }
