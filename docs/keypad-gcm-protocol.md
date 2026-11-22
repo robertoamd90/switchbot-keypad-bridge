@@ -20,9 +20,19 @@ in those logs. For the GCM experiment, record its version from the SwitchBot app
 The updated boot diagnostic also prints `GCM tag-prefix self-test: PASS/FAIL`.
 It checks the reference framing's two-byte prefix using a public AES-GCM vector
 and checks that a modified tag or ciphertext is rejected and the output buffer
-cleared. The updated C3 firmware compiles with ESPHome 2026.10.2. This new
-self-test still needs a run on the physical C3; it does not negotiate with the
-keypad or establish that its protocol uses the same tag format.
+cleared. Both GCM self-tests passed on the physical C3 after OTA. This tests
+the primitive and prefix checking, independent of keypad negotiation.
+
+The test Keypad Touch was initially on 2.5 with no update offered in the app.
+The app showed a keypad-first prerequisite for an available lock update. In
+this setup, associating the dedicated keypad with that lock and reopening the
+lock update flow made the keypad update available. The test keypad now reports
+**3.1**. This is an observation for this setup, not a general rollout rule.
+
+The wizard now logs `Keypad provisioning handshake: mode=... response_length=...`
+and stops on modes other than CTR before provisioning writes. This measures the
+updated keypad acting as a BLE server during association. The later runtime
+test still needs to verify its separate role as a BLE client to the bridge.
 
 ## What to run now
 

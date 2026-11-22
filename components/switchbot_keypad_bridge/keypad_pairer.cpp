@@ -118,7 +118,7 @@ std::string KeypadPairer::start(Request req) {
       [this](Request &prepared) {
         this->key_ = prepared.key;
         this->key_id_ = static_cast<uint8_t>(prepared.key_id);
-        this->iv_received_ = false;
+        this->session_reply_.store(SessionReply::IDLE);
 
         if (this->ack_sem_ == nullptr) {
           this->ack_sem_ = xSemaphoreCreateBinary();
@@ -160,9 +160,18 @@ void KeypadPairer::set_failed_(const std::string &err) {
 }
 
 void KeypadPairer::on_notify_(const uint8_t *data, size_t length) {
-  if (length == 20 && data[0] == 0x01 && data[1] == 0x00) {
-    std::memcpy(this->iv_.data(), data + 4, 16);
-    this->iv_received_.store(true);
+  if (this->session_reply_.load() == SessionReply::WAITING &&
+      length >= 4 && data[0] == 0x01 && data[1] == 0x00) {
+    const uint8_t mode = data[2];
+    ESP_LOGI(TAG, "Keypad provisioning handshake: mode=0x%02X response_length=%zu", mode, length);
+    if (mode != 0x00) {
+      this->session_reply_.store(SessionReply::UNSUPPORTED);
+    } else if (length != 4 + this->iv_.size()) {
+      this->session_reply_.store(SessionReply::INVALID_LENGTH);
+    } else {
+      std::memcpy(this->iv_.data(), data + 4, this->iv_.size());
+      this->session_reply_.store(SessionReply::CTR);
+    }
   }
   if (this->ack_sem_ != nullptr) {
     xSemaphoreGive(this->ack_sem_);
@@ -231,6 +240,7 @@ void KeypadPairer::execute_(Request &req) {
 
   this->set_step_(2, STEP_LABELS[2]);
   while (xSemaphoreTake(this->ack_sem_, 0) == pdTRUE) { /* drain */ }
+  this->session_reply_.store(SessionReply::WAITING);
   uint8_t iv_req[8] = {0x57, 0x00, 0x00, 0x00, 0x0F, 0x21, 0x03,
                        this->key_id_};
   if (!rx->writeValue(iv_req, sizeof(iv_req), /*response=*/true)) {
@@ -239,13 +249,20 @@ void KeypadPairer::execute_(Request &req) {
     this->set_failed_("Could not request session IV from keypad.");
     return;
   }
-  for (int i = 0; i < 6 && !this->iv_received_.load(); ++i) {
+  for (int i = 0; i < 6 && this->session_reply_.load() == SessionReply::WAITING; ++i) {
     xSemaphoreTake(this->ack_sem_, pdMS_TO_TICKS(500));
   }
-  if (!this->iv_received_.load()) {
+  const SessionReply reply = this->session_reply_.load();
+  if (reply != SessionReply::CTR) {
     client->disconnect();
     NimBLEDevice::deleteClient(client);
-    this->set_failed_("Keypad did not open a session. Reset it into pairing mode and retry.");
+    if (reply == SessionReply::UNSUPPORTED) {
+      this->set_failed_("Keypad requested an encryption mode that this wizard does not support.");
+    } else if (reply == SessionReply::INVALID_LENGTH) {
+      this->set_failed_("Keypad returned an invalid CTR session response length.");
+    } else {
+      this->set_failed_("Keypad did not open a session. Bring it close and retry.");
+    }
     return;
   }
 

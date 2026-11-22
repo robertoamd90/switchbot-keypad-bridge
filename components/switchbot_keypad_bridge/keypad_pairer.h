@@ -85,9 +85,10 @@ class KeypadPairer : private BackgroundBleJob {
   void set_success_(const std::string &keypad_mac, KeypadFamily family);
   void set_failed_(const std::string &err);
 
-  // BLE notification sink: we look for the 20-byte session-IV response
-  // (`01 00 00 00 <IV[16]>`) and stash the IV. Everything else just
-  // releases the ACK semaphore so `send_command_` can move on.
+  enum class SessionReply : uint8_t { IDLE, WAITING, CTR, UNSUPPORTED, INVALID_LENGTH };
+
+  // During negotiation, record the advertised mode and accept only a CTR IV.
+  // During pairing commands, notifications release the ACK semaphore.
   void on_notify_(const uint8_t *data, size_t length);
 
   // One encrypted BLE write + best-effort ACK wait. plaintext is
@@ -106,8 +107,8 @@ class KeypadPairer : private BackgroundBleJob {
   // ----- Per-job state, only touched by the task -----
   std::vector<uint8_t> key_;                // copy of req.key
   uint8_t              key_id_{0};
-  std::array<uint8_t, 16> iv_{};            // session IV; valid once iv_received_
-  std::atomic<bool>    iv_received_{false};
+  std::array<uint8_t, 16> iv_{};            // valid after a CTR session reply
+  std::atomic<SessionReply> session_reply_{SessionReply::IDLE};
 };
 
 }  // namespace switchbot_keypad_bridge
