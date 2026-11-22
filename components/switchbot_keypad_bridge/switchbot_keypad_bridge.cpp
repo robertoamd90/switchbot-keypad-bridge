@@ -203,7 +203,7 @@ void SwitchbotKeypadBridge::setup() {
   ESP_LOGI(TAG, "Ready. Advertising on %s",
            NimBLEDevice::getAddress().toString().c_str());
   if (this->keypad_gcm_experimental_) {
-    ESP_LOGI(TAG, "Keypad crypto mode: gcm_experimental (standalone fingerprint test)");
+    ESP_LOGI(TAG, "Keypad crypto mode: gcm_experimental (standalone Touch test)");
   }
 
   this->pairing_ui_.set_shared_key(this->shared_key_);
@@ -276,7 +276,7 @@ void SwitchbotKeypadBridge::loop() {
           this->keypad_gcm_connection_started_ = millis();
           this->keypad_gcm_probe_slot_ = 0;
           this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FIRST_FRAME;
-          this->keypad_gcm_unlock_ = {};
+          this->keypad_gcm_command_ = {};
         }
       } else {
         this->keypad_gcm_probe_slot_ = 0;
@@ -286,18 +286,28 @@ void SwitchbotKeypadBridge::loop() {
       ESP_LOGI(TAG, "Keypad disconnected, restarting advertising");
       if (this->keypad_gcm_experimental_) {
         if (ev.connection == this->keypad_gcm_connection_) {
-          const auto unlock = this->keypad_gcm_unlock_;
-          const bool complete = this->keypad_gcm_probe_stage_ == KeypadGcmProbeStage::AFTER_POLL_REPLY &&
+          const auto command = this->keypad_gcm_command_;
+          const auto stage = this->keypad_gcm_probe_stage_;
+          const bool complete = stage == KeypadGcmProbeStage::AFTER_POLL_REPLY &&
               millis() - this->keypad_gcm_connection_started_ < GCM_EXCHANGE_TIMEOUT_MS;
           this->keypad_gcm_connection_ = BLE_HS_CONN_HANDLE_NONE;
           this->keypad_gcm_probe_slot_ = 0;
-          this->keypad_gcm_unlock_ = {};
+          this->keypad_gcm_command_ = {};
           this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
-          if (complete && unlock.type == CommandType::UNLOCK && this->keypad_paired_ && !this->lock_linked_) {
-            this->keypad_state_.unlock(millis());
-            ESP_LOGI(TAG, "GCM experimental unlock: method=%s index=%d",
-                     unlock_method_name(unlock.method), unlock.credential_index);
-            this->publish_unlock_(unlock.method, unlock.credential_index);
+          if (stage == KeypadGcmProbeStage::WAIT_POLL) {
+            ESP_LOGI(TAG, "GCM experimental action incomplete: disconnected before a valid state poll");
+          }
+          if (complete && this->keypad_paired_ && !this->lock_linked_) {
+            if (command.type == CommandType::LOCK) {
+              this->keypad_state_.rearm();
+              ESP_LOGI(TAG, "GCM experimental lock");
+              this->publish_lock_();
+            } else if (command.type == CommandType::UNLOCK) {
+              this->keypad_state_.unlock(millis());
+              ESP_LOGI(TAG, "GCM experimental unlock: method=%s index=%d",
+                       unlock_method_name(command.method), command.credential_index);
+              this->publish_unlock_(command.method, command.credential_index);
+            }
           }
         }
       } else {
@@ -654,7 +664,7 @@ void SwitchbotKeypadBridge::update_keypad_gcm_probe_() {
 
 void SwitchbotKeypadBridge::reject_keypad_gcm_exchange_() {
   this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
-  this->keypad_gcm_unlock_ = {};
+  this->keypad_gcm_command_ = {};
   if (this->keypad_gcm_experimental_) {
     if (this->keypad_gcm_failures_ == 0)
       this->keypad_gcm_failures_since_ = millis();
@@ -742,7 +752,11 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
     }
     response[2] = tag[0];
     response[3] = tag[1];
-    return this->tx_characteristic_->notify(response, LockSession::HEADER_LEN + length, connection);
+    if (!this->tx_characteristic_->notify(response, LockSession::HEADER_LEN + length, connection)) {
+      ESP_LOGW(TAG, "Keypad GCM: could not send encrypted reply");
+      return false;
+    }
+    return true;
   };
 
   if (stage == KeypadGcmProbeStage::AFTER_POLL_REPLY) {
@@ -768,7 +782,9 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
     this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
     if (plus_one && plus_one_command.type == CommandType::STATE_POLL && !match && !plus_two) {
       uint8_t state_payload[1 + sizeof(STATE_PAYLOAD_TAIL)];
-      state_payload[0] = static_cast<uint8_t>(KeypadState::LockState::UNLOCKED);
+      const auto state = this->keypad_gcm_command_.type == CommandType::LOCK
+                            ? KeypadState::LockState::LOCKED : KeypadState::LockState::UNLOCKED;
+      state_payload[0] = static_cast<uint8_t>(state);
       std::memcpy(state_payload + 1, STATE_PAYLOAD_TAIL, sizeof(STATE_PAYLOAD_TAIL));
       if (send_reply(nonces[3], state_payload, sizeof(state_payload))) {
         this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::AFTER_POLL_REPLY;
@@ -782,19 +798,26 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
   ESP_LOGI(TAG, "Keypad GCM probe: first frame length=%zu tag_prefix=%s nonce=initial",
            frame.size(), match ? "match" : "mismatch");
   this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
-  if (!match || initial_command.type != CommandType::UNLOCK ||
-      (this->keypad_gcm_experimental_ && initial_command.method != UnlockMethod::FINGERPRINT)) {
-    if (!match) {
-      this->reject_keypad_gcm_exchange_();
-    }
-    ESP_LOGI(TAG, "Keypad GCM: missing supported tag-matching unlock frame");
+  if (!match) {
+    this->reject_keypad_gcm_exchange_();
+    ESP_LOGW(TAG, "Keypad GCM: rejected first frame because its tag did not match");
+    return;
+  }
+  const auto method = initial_command.method;
+  const bool lock = initial_command.type == CommandType::LOCK;
+  const bool touch_unlock = initial_command.type == CommandType::UNLOCK &&
+      (method == UnlockMethod::FINGERPRINT || method == UnlockMethod::NFC || method == UnlockMethod::PIN);
+  if (!touch_unlock && !lock) {
+    ESP_LOGI(TAG, "Keypad GCM: valid tag but unsupported Touch command");
     return;
   }
 
-  if (send_reply(nonces[2], RESPONSE_UNLOCK, sizeof(RESPONSE_UNLOCK))) {
-    this->keypad_gcm_unlock_ = initial_command;
+  const uint8_t *response = lock ? RESPONSE_LOCK : RESPONSE_UNLOCK;
+  const size_t response_length = lock ? sizeof(RESPONSE_LOCK) : sizeof(RESPONSE_UNLOCK);
+  if (send_reply(nonces[2], response, response_length)) {
+    this->keypad_gcm_command_ = initial_command;
     this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::WAIT_POLL;
-    ESP_LOGI(TAG, "Keypad GCM probe: sent diagnostic reply nonce=N+2");
+    ESP_LOGI(TAG, "Keypad GCM: sent %s reply nonce=N+2", lock ? "lock" : "unlock");
   }
 }
 

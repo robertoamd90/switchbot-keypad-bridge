@@ -1,7 +1,7 @@
 # Keypad GCM investigation — issue #1
 
 CTR is the default. The optional `keypad_crypto_mode: gcm_experimental` setting
-enables a bench mode for standalone Keypad Touch 3.1 fingerprint sessions.
+enables a bench mode for standalone Keypad Touch 3.1 action sessions.
 It uses the saved keypad association and the bounded flow described below.
 
 SwitchBot bulletin [ORSA-2026-002](https://www.switcbot.live/pages/security-bulletins)
@@ -212,9 +212,17 @@ ESPHome logs and the usual `Unlock` entity event in Home Assistant. Try again
 after the first disconnect. The custom event still uses the existing HA device
 permission and carries `method` and `index`.
 
+The first on-device GCM event trial published a fingerprint unlock at index 0.
+The two subsequent GCM frames had matching tags and were rejected by the
+fingerprint-only build. The next build accepts Touch PIN, NFC and fingerprint
+unlock commands, and the keypad's Lock command. Test each method separately
+and record both the event result and any red or blinking keypad indicator.
+The event confirms what the bridge processed. It cannot confirm how the
+keypad interpreted the reply or its own indicator when the action ends.
+
 The experimental mode allows one exchange on a single BLE connection. It
 checks both two-byte tag prefixes, the known frame sizes and command sequence,
-and publishes the fingerprint event only after the poll reply was sent and
+and publishes the action event only after the poll reply was sent and
 the same connection disconnected within ten seconds without a third frame.
 It rejects unexpected frames, has a shared limit of three rejected exchanges
 per 60-second window, and handles neither a linked physical lock nor a CTR
