@@ -47,6 +47,7 @@ class PhysicalLockClient {
   };
   using ProgressCallback = std::function<void(Phase)>;
   using CommandProgressCallback = std::function<void(size_t command_index)>;
+  using ProvisionResponseCheck = std::function<bool(size_t, const std::vector<uint8_t> &)>;
   using ResponseCallback = std::function<void(const std::vector<uint8_t> &response)>;
 
   struct StatusProbeReply {
@@ -102,6 +103,9 @@ class PhysicalLockClient {
       std::vector<std::vector<uint8_t>> &provision_responses,
       const Config &shared_config,
       std::string &error_out,
+      bool gcm_slot_test,
+      uint8_t keypad_poll_suffix,
+      const ProvisionResponseCheck &check_response,
       const ProgressCallback &provision_progress = nullptr,
       const CommandProgressCallback &provision_command_progress = nullptr,
       const ProgressCallback &verify_progress = nullptr);

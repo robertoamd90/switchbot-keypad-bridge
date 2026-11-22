@@ -1193,15 +1193,29 @@
         button.disabled = false;
       }
     });
+    if (device.gcm_slot_test && probe && !offline) {
+      const test = document.createElement('button');
+      test.className = 'btn-pair';
+      test.textContent = 'Test slot (writes key)';
+      test.addEventListener('click', () => {
+        if (window.confirm(`This writes the keypad key to "${device.name}" and may replace its current keypad pairing. Proceed only when you can restore the pairing in the SwitchBot app.`)) {
+          startDeviceJob('gcm_slot_test', device);
+        }
+      });
+      card.appendChild(test);
+    }
     return card;
   }
 
   async function startDeviceJob(kind, device) {
-    const flow = DEVICE_FLOWS[kind];
+    const slotTest = kind === 'gcm_slot_test';
+    const flow = DEVICE_FLOWS[slotTest ? 'lock' : kind];
     beginProgress(kind, device.name, device.mac, flow.hint);
     let jobId;
     try {
-      const r = await api('POST', flow.startPath, flow.payload(device));
+      const payload = flow.payload(device);
+      if (slotTest) payload.mode = 'gcm_slot_test';
+      const r = await api('POST', flow.startPath, payload);
       jobId = r.job_id;
       fillStepper(r.labels);
     } catch (err) {
@@ -1339,13 +1353,23 @@
       errorDesc: 'Could not verify the lock over BLE.',
       retry: () => { showScreen('locks'); loadLocks(); },
     },
+    gcm_slot_test: {
+      successTitle: 'GCM shared slot verified',
+      successDesc: 'The lock answered a GCM query using the keypad key.',
+      nextTitle: 'Restore the original pairing',
+      nextBody: 'Use the SwitchBot app if this lock had a keypad paired before the test.',
+      successHint: null,
+      errorTitle: 'GCM slot test failed',
+      errorDesc: 'Check the last verified step in the device logs.',
+      retry: () => { showScreen('locks'); loadLocks(); },
+    },
   };
 
   function showResultSuccess() {
     jobActive = false;
     const copy = RESULT_COPY[progressKind];
     if (progressKind === 'lock') setLockLinked(true);
-    else setKeypadPaired(true);
+    else if (progressKind === 'keypad') setKeypadPaired(true);
     document.getElementById('result-success-title').textContent = copy.successTitle;
     document.getElementById('result-success-desc').textContent = copy.successDesc;
     document.getElementById('result-next-title').textContent = copy.nextTitle;

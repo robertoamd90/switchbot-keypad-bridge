@@ -305,7 +305,11 @@ void SwitchbotKeypadBridge::loop() {
             ESP_LOGI(TAG, "Keypad GCM reference test ended: poll reply %s; events suspended for this test",
                      complete ? "sent" : "not completed");
           }
-          if (!reference_test && complete && this->keypad_paired_ && !this->lock_linked_) {
+          if (this->gcm_lock_slot_test_ && complete) {
+            ESP_LOGI(TAG, "Keypad GCM slot test: poll observed; action events suspended");
+          }
+          if (!this->gcm_lock_slot_test_ && !reference_test && complete &&
+              this->keypad_paired_ && !this->lock_linked_) {
             if (command.type == CommandType::LOCK) {
               this->keypad_state_.rearm();
               ESP_LOGI(TAG, "GCM experimental lock");

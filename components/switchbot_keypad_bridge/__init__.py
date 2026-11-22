@@ -56,6 +56,7 @@ CONF_LOCK_BATTERY_LEVEL = "lock_battery_level"
 CONF_BATTERY_SCAN_INTERVAL = "battery_scan_interval"
 CONF_REARM_AFTER = "rearm_after"
 CONF_GCM_DIAGNOSTICS = "gcm_diagnostics"
+CONF_GCM_LOCK_SLOT_TEST = "gcm_lock_slot_test"
 CONF_KEYPAD_CRYPTO_MODE = "keypad_crypto_mode"
 CONF_RESET_BUTTON = "reset_button"
 CONF_ON_LOCK = "on_lock"
@@ -144,6 +145,7 @@ CONFIG_SCHEMA = cv.Schema(
         ),
         cv.Optional(CONF_PAIRING_UI): _deprecated_pairing_ui,
         cv.Optional(CONF_GCM_DIAGNOSTICS, default=False): cv.boolean,
+        cv.Optional(CONF_GCM_LOCK_SLOT_TEST, default=False): cv.boolean,
         cv.Optional(CONF_KEYPAD_CRYPTO_MODE, default="ctr"): cv.one_of("ctr", "gcm_experimental", lower=True),
         cv.Optional(CONF_RESET_BUTTON): button.button_schema(
             ResetButton,
@@ -175,6 +177,11 @@ _INCOMPATIBLE_COMPONENTS = [
 
 
 def _final_validate(config):
+    if config[CONF_GCM_LOCK_SLOT_TEST] and (
+        not config[CONF_GCM_DIAGNOSTICS]
+        or config[CONF_KEYPAD_CRYPTO_MODE] != "gcm_experimental"
+    ):
+        raise cv.Invalid("gcm_lock_slot_test requires diagnostics and gcm_experimental")
     full_config = fv.full_config.get()
 
     if CORE.is_esp32:
@@ -227,6 +234,7 @@ async def to_code(config):
     await cg.register_component(var, config)
     cg.add(var.set_rearm_after(config[CONF_REARM_AFTER].total_milliseconds))
     cg.add(var.set_gcm_diagnostics(config[CONF_GCM_DIAGNOSTICS]))
+    cg.add(var.set_gcm_lock_slot_test(config[CONF_GCM_LOCK_SLOT_TEST]))
     cg.add(var.set_keypad_gcm_experimental(config[CONF_KEYPAD_CRYPTO_MODE] == "gcm_experimental"))
 
     if keypad_conf := config.get(CONF_KEYPAD_ACTION):

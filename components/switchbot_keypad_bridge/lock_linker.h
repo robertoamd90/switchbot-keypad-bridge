@@ -54,6 +54,8 @@ class LockLinker : private BackgroundBleJob {
     uint8_t shared_slot_id{0};
     uint8_t lock_key_id{0};
     std::array<uint8_t, 16> lock_key{};
+    bool gcm_slot_test{false};
+    uint8_t keypad_poll_suffix{0};
   };
 
   // Spawns the link task and returns a job id. If a job is already running

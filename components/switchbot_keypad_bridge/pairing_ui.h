@@ -55,6 +55,7 @@ class PairingUi {
   }
   void set_lock_linked(bool linked) { this->lock_linked_.store(linked); }
   void set_gcm_diagnostics(bool enabled) { this->gcm_diagnostics_ = enabled; }
+  void set_gcm_lock_slot_test(bool enabled) { this->gcm_lock_slot_test_ = enabled; }
   void record_keypad_poll_suffix(uint8_t suffix) { this->keypad_poll_suffix_.store(suffix); }
   void set_keypad_gcm_experimental(bool enabled) { this->keypad_gcm_experimental_ = enabled; }
   bool take_keypad_probe_request() { return this->keypad_probe_requested_.exchange(false); }
@@ -122,6 +123,7 @@ class PairingUi {
 
   httpd_handle_t server_{nullptr};
   bool gcm_diagnostics_{false};
+  bool gcm_lock_slot_test_{false};
   std::atomic<int16_t> keypad_poll_suffix_{-1};
   bool keypad_gcm_experimental_{false};
   std::atomic<bool> keypad_probe_requested_{false};

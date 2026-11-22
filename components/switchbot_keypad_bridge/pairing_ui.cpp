@@ -453,6 +453,9 @@ esp_err_t PairingUi::handle_locks_(httpd_req_t *req) {
     cJSON_AddStringToObject(o, "device_type", dev.device_type.c_str());
     cJSON_AddBoolToObject(o, "online", hit != nearby.end());
     cJSON_AddBoolToObject(o, "session_probe", self->gcm_diagnostics_);
+    cJSON_AddBoolToObject(o, "gcm_slot_test",
+                          self->gcm_diagnostics_ && self->gcm_lock_slot_test_ &&
+                              self->keypad_paired_.load() && !self->lock_linked_.load());
     if (hit != nearby.end()) {
       cJSON_AddNumberToObject(o, "rssi", hit->second.rssi);
     } else {
@@ -630,10 +633,17 @@ esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {
 esp_err_t PairingUi::handle_lock_link_(httpd_req_t *req) {
   auto *self = static_cast<PairingUi *>(req->user_ctx);
   self->touch_activity_();
-  if (self->gcm_diagnostics_ || self->keypad_gcm_experimental_) {
+  std::string body = read_body_(req);
+  const bool slot_test = extract_json_str(body, "mode") == "gcm_slot_test";
+  if (slot_test && !(self->gcm_diagnostics_ && self->gcm_lock_slot_test_)) {
+    return reply_error_(req, "409 Conflict", "The GCM slot write test is disabled.");
+  }
+  if (!slot_test && (self->gcm_diagnostics_ || self->keypad_gcm_experimental_)) {
     return reply_error_(req, "409 Conflict", "Use CTR mode and turn off GCM diagnostics to link a lock.");
   }
-  std::string body = read_body_(req);
+  if (slot_test && self->pairer_.state() == KeypadPairer::State::RUNNING) {
+    return reply_error_(req, "409 Conflict", "Wait for keypad pairing to finish.");
+  }
   std::string mac = extract_json_str(body, "mac");
   if (mac.empty()) {
     return reply_error_(req, "400 Bad Request", "Missing lock mac.");
@@ -643,6 +653,10 @@ esp_err_t PairingUi::handle_lock_link_(httpd_req_t *req) {
   }
   if (!self->keypad_paired_.load()) {
     return reply_error_(req, "409 Conflict", "Link a keypad before linking a lock.");
+  }
+  const auto keypad_poll_suffix = self->keypad_poll_suffix_.load();
+  if (slot_test && (keypad_poll_suffix < 0 || keypad_poll_suffix > 0xFF)) {
+    return reply_error_(req, "409 Conflict", "Use a registered fingerprint once in experimental GCM mode to capture a keypad poll before this test.");
   }
   // Same one-shot rule as /api/pair: re-linking goes through Reset.
   if (self->lock_linked_.load()) {
@@ -685,13 +699,15 @@ esp_err_t PairingUi::handle_lock_link_(httpd_req_t *req) {
       static_cast<KeypadFamily>(self->keypad_family_.load()));
   lr.lock_key_id = lock_key_id;
   lr.lock_key = lock_key;
+  lr.gcm_slot_test = slot_test;
+  if (slot_test) lr.keypad_poll_suffix = static_cast<uint8_t>(keypad_poll_suffix);
 
   std::string job_id = self->linker_.start(std::move(lr));
   if (job_id.empty()) {
     return reply_error_(req, "409 Conflict",
                         "A lock-link job is already in progress.");
   }
-  {
+  if (!slot_test) {
     std::lock_guard<std::mutex> lk(self->jobs_mu_);
     self->link_job_id_   = job_id;
     self->link_notified_ = false;

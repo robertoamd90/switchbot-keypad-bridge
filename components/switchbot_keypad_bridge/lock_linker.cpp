@@ -55,21 +55,14 @@ std::vector<std::vector<uint8_t>> make_provision_commands(
   };
 }
 
-bool provision_responses_plausible(
-    uint8_t slot_id, const std::vector<std::vector<uint8_t>> &responses) {
-  if (responses.size() != 4) {
-    return false;
+bool provision_response_plausible(uint8_t slot_id, size_t step,
+                                  const std::vector<uint8_t> &response) {
+  if (step == 0 && response.empty()) return true;
+  if (step == 1) {
+    return response.size() == 2 && response[0] == slot_id &&
+           response[1] == slot_nonce(slot_id);
   }
-  if (!responses[0].empty() &&
-      !(responses[0].size() == 1 && responses[0][0] == slot_id)) {
-    return false;
-  }
-  if (responses[1].size() != 2 || responses[1][0] != slot_id ||
-      responses[1][1] != slot_nonce(slot_id)) {
-    return false;
-  }
-  return responses[2].size() == 1 && responses[2][0] == slot_id &&
-         responses[3].size() == 1 && responses[3][0] == slot_id;
+  return step < 4 && response.size() == 1 && response[0] == slot_id;
 }
 
 }  // namespace
@@ -115,7 +108,7 @@ void LockLinker::set_success_(const Request &req) {
   std::lock_guard<std::mutex> lk(this->mu_);
   this->status_.state   = State::SUCCESS;
   this->status_.step    = this->status_.total;
-  this->status_.message = "Lock linked";
+  this->status_.message = req.gcm_slot_test ? "GCM shared slot verified" : "Lock linked";
   this->status_.error.clear();
   this->status_name_ = req.name;
   this->status_mac_ = req.mac;
@@ -185,15 +178,23 @@ void LockLinker::execute_(Request &req) {
   std::vector<std::vector<uint8_t>> provision_responses;
   const std::vector<std::vector<uint8_t>> provision_commands =
       make_provision_commands(slot, req.shared_key);
+  auto check_response = [slot](size_t step, const std::vector<uint8_t> &response) {
+    return provision_response_plausible(slot, step, response);
+  };
   if (!this->client_.provision_and_verify_shared_key(
           provisioning_cfg, provision_commands, provision_responses,
-          shared_cfg, err, provision_phase, provision_command, verify_phase)) {
+          shared_cfg, err, req.gcm_slot_test, req.keypad_poll_suffix, check_response,
+          provision_phase, provision_command, verify_phase)) {
     this->set_failed_("Could not link the lock shared key: " + err);
     return;
   }
-  if (!provision_responses_plausible(slot, provision_responses)) {
-    this->set_failed_("The lock returned an unexpected shared-key provisioning response.");
-    return;
+  if (!req.gcm_slot_test) {
+    for (size_t i = 0; i < provision_responses.size(); ++i) {
+      if (!check_response(i, provision_responses[i])) {
+        this->set_failed_("The lock returned an unexpected shared-key provisioning response.");
+        return;
+      }
+    }
   }
 
   {

@@ -103,10 +103,11 @@ uint8_t normalize_mode_byte(uint8_t mode_byte) {
   return mode_byte & 0x01;
 }
 
-void increment_gcm_iv(std::array<uint8_t, 12> &iv) {
+bool increment_gcm_iv(std::array<uint8_t, 12> &iv) {
   for (int i = static_cast<int>(iv.size()) - 1; i >= 0; --i) {
-    if (++iv[static_cast<size_t>(i)] != 0) break;
+    if (++iv[static_cast<size_t>(i)] != 0) return true;
   }
+  return false;
 }
 
 }  // namespace
@@ -414,12 +415,20 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
     std::vector<std::vector<uint8_t>> &provision_responses,
     const Config &shared_config,
     std::string &error_out,
+    bool gcm_slot_test,
+    uint8_t keypad_poll_suffix,
+    const ProvisionResponseCheck &check_response,
     const ProgressCallback &provision_progress,
     const CommandProgressCallback &provision_command_progress,
     const ProgressCallback &verify_progress) {
   provision_responses.clear();
   if (provision_commands.empty()) {
     error_out = "Empty lock provisioning command sequence.";
+    return false;
+  }
+  if (gcm_slot_test && (provisioning_config.key_id == shared_config.key_id ||
+                        provisioning_config.key == shared_config.key)) {
+    error_out = "The test requires separate account and keypad credentials.";
     return false;
   }
   for (const auto &cmd : provision_commands) {
@@ -466,8 +475,11 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
     return false;
   }
 
+  const std::vector<uint8_t> poll_cmd{0x0F, 0x4F, 0x81, keypad_poll_suffix};
+  std::vector<uint8_t> account_poll;
+  bool write_attempted = false;
   auto run_session =
-      [&](const Config &config, const char *session_name,
+      [&](const Config &config, bool provisioning,
           const std::vector<std::vector<uint8_t>> &commands,
           std::vector<std::vector<uint8_t>> &responses,
           const ProgressCallback &progress,
@@ -475,6 +487,7 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
     responses.clear();
     Session session;
     std::string notify;
+    const char *session_name = provisioning ? "lock provisioning" : "shared-key verification";
     if (progress) progress(Phase::SESSION);
     uint8_t iv_req[8] = {PROTOCOL_MAGIC, 0x00, 0x00, 0x00,
                          0x0F, 0x21, 0x03, config.key_id};
@@ -491,9 +504,81 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
     if (!this->parse_session_response_(notify, session, error_out)) {
       return false;
     }
-    if (session.mode == CryptoMode::GCM && commands.size() > 1) {
+    const bool gcm = session.mode == CryptoMode::GCM;
+    if (!gcm_slot_test && gcm && provisioning) {
       error_out = "GCM lock provisioning stopped before writes: command counter progression is unverified.";
       return false;
+    }
+    if (gcm_slot_test && !gcm) {
+      error_out = std::string("The lock opened the ") + session_name + " session in CTR.";
+      return false;
+    }
+
+    auto exchange_command = [&](const uint8_t *data, size_t length,
+                                std::vector<uint8_t> &response) {
+      if (!this->send_encrypted_(config, session, rx, data, length, error_out, !gcm_slot_test)) {
+        return false;
+      }
+      if (!wait_notify(waiter, 2500, notify)) {
+        error_out = "Lock did not answer the command.";
+        return false;
+      }
+      if (!gcm_slot_test) {
+        return this->decrypt_notify_(config, session, notify, response, error_out);
+      }
+      const auto *bytes = reinterpret_cast<const uint8_t *>(notify.data());
+      if (notify.size() < WIRE_HEADER_LEN || notify.size() > 256 ||
+          bytes[0] != 0x01 || bytes[1] != config.key_id) {
+        error_out = "Lock response did not have the expected success status and slot.";
+        return false;
+      }
+      const size_t payload_len = notify.size() - WIRE_HEADER_LEN;
+      const uint8_t prefix[2] = {bytes[2], bytes[3]};
+      // Some provisioning replies have an empty body but still need a valid tag.
+      uint8_t empty_input = 0, empty_output = 0;
+      response.resize(payload_len);
+      if (!aes_gcm_decrypt_verify_prefix(config.key.data(), session.gcm_iv.data(),
+                                         payload_len ? bytes + WIRE_HEADER_LEN : &empty_input,
+                                         payload_len ? response.data() : &empty_output,
+                                         payload_len, prefix)) {
+        error_out = "Lock response did not match the tag for this request's nonce.";
+        return false;
+      }
+      return true;
+    };
+
+    if (gcm_slot_test && provisioning) {
+      const uint8_t zero_key[16]{}, zero_nonce[12]{}, empty_input = 0;
+      const uint8_t empty_tag_prefix[2] = {0x58, 0xE2};
+      uint8_t empty_output = 0;
+      if (!aes_gcm_decrypt_verify_prefix(zero_key, zero_nonce, &empty_input, &empty_output, 0,
+                                         empty_tag_prefix)) {
+        error_out = "The AES-GCM check for an empty response failed. No writes sent.";
+        return false;
+      }
+      auto last_nonce = session.gcm_iv;
+      for (size_t i = 0; i <= commands.size(); ++i) {
+        if (!increment_gcm_iv(last_nonce)) {
+          error_out = "The provisioning nonce would wrap. No writes sent.";
+          return false;
+        }
+      }
+      std::vector<uint8_t> response;
+      if (!exchange_command(verify_cmd, verify_len, response)) {
+        error_out = "Read-only GCM check failed before writes: " + error_out;
+        return false;
+      }
+      if (!lock_info_response_plausible(config.model, response)) {
+        error_out = "Read-only GCM check returned unexpected lock info. No writes sent.";
+        return false;
+      }
+      increment_gcm_iv(session.gcm_iv);
+      if (!exchange_command(poll_cmd.data(), poll_cmd.size(), account_poll) || account_poll.empty()) {
+        error_out = "Read-only account-slot poll failed before writes. " + error_out;
+        return false;
+      }
+      ESP_LOGI(TAG, "Lock GCM slot test: account read-only check passed");
+      increment_gcm_iv(session.gcm_iv);
     }
 
     for (size_t i = 0; i < commands.size(); ++i) {
@@ -503,34 +588,38 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
       } else if (progress) {
         progress(Phase::COMMAND);
       }
-      if (!this->send_encrypted_(config, session, rx, cmd.data(), cmd.size(),
-                                 error_out)) {
-        return false;
-      }
-      if (!wait_notify(waiter, 2500, notify)) {
-        error_out = "Lock did not answer the forwarded command.";
-        return false;
-      }
       std::vector<uint8_t> response;
-      if (!this->decrypt_notify_(config, session, notify, response, error_out)) {
+      write_attempted |= provisioning;
+      if (!exchange_command(cmd.data(), cmd.size(), response)) {
+        if (gcm_slot_test && provisioning) {
+          error_out = "GCM write " + std::to_string(i + 1) + ": " + error_out;
+        }
         return false;
+      }
+      if (gcm_slot_test && provisioning) {
+        if (!check_response(i, response)) {
+          error_out = "Unexpected payload for GCM write " + std::to_string(i + 1) + ".";
+          return false;
+        }
+        ESP_LOGI(TAG, "Lock GCM slot test: write %zu/%zu verified", i + 1, commands.size());
+        if (i + 1 < commands.size()) increment_gcm_iv(session.gcm_iv);
       }
       responses.push_back(std::move(response));
     }
     return true;
   };
 
-  bool ok = run_session(provisioning_config, "lock provisioning",
+  bool ok = run_session(provisioning_config, true,
                         provision_commands, provision_responses,
                         provision_progress, provision_command_progress);
   if (ok) {
-    std::vector<std::vector<uint8_t>> verify_commands = {
-        std::vector<uint8_t>(verify_cmd, verify_cmd + verify_len)};
+    const std::vector<std::vector<uint8_t>> verify_commands = {
+        gcm_slot_test ? poll_cmd : std::vector<uint8_t>(verify_cmd, verify_cmd + verify_len)};
     std::vector<std::vector<uint8_t>> verify_responses;
-    ok = run_session(shared_config, "shared-key verification",
+    ok = run_session(shared_config, false,
                      verify_commands, verify_responses,
                      verify_progress, nullptr);
-    if (ok) {
+    if (ok && !gcm_slot_test) {
       if (verify_responses.empty() || verify_responses.front().empty()) {
         error_out = "Shared key verified but no lock-info payload was returned.";
         ok = false;
@@ -540,6 +629,24 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
         ok = false;
       }
     }
+    if (gcm_slot_test && ok) {
+      const auto &poll = verify_responses.back();
+      const bool keypad_shape = poll.size() == 14 && poll[1] == 0x08 &&
+                                poll[3] == 0x41 && poll[8] == 0x80;
+      if (poll.empty()) {
+        error_out = "The shared slot poll returned an empty payload.";
+        ok = false;
+      } else {
+        ESP_LOGI(TAG, "Lock GCM shared-slot poll verified: length=%zu account_length=%zu keypad_shape=%s same_payload=%s",
+                 poll.size(), account_poll.size(), keypad_shape ? "yes" : "no",
+                 poll == account_poll ? "yes" : "no");
+      }
+    }
+  }
+  if (gcm_slot_test && ok) {
+    ESP_LOGI(TAG, "Lock GCM shared-slot check verified: slot=0x%02X", shared_config.key_id);
+  } else if (gcm_slot_test && write_attempted) {
+    error_out += " The lock slot may have changed. Restore the original pairing in the SwitchBot app before retrying.";
   }
 
   tx->unsubscribe();

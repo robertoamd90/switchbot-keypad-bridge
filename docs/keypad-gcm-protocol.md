@@ -292,6 +292,31 @@ physical lock is unlocked so that the snapshot reflects the intended state.
 The observed keypad indication is the result. No change in indication would
 leave reply nonce, unlock reply content and slot-specific semantics open.
 
+The reference-reply run used the authenticated lock state body at `N+3` as
+intended. The user reported a red LED both with the synthetic state body and
+with the genuine body. Substituting the state body alone does not fix the
+keypad's visible result. The two versions used the same unlock reply and
+response nonces (`N+2` and `N+3`). A later state poll or disconnect is not
+evidence that the keypad accepted either response. A reference from the
+actual keypad slot is needed before changing those rules again.
+
+The GCM slot write test requires `gcm_lock_slot_test: true` with
+`gcm_diagnostics: true` and `keypad_crypto_mode: gcm_experimental`.
+Use a dedicated keypad and a lock available for bench testing. An existing
+pairing on the selected lock may need to be restored in the SwitchBot app
+even if the test fails. The test suspends experimental keypad action events
+and runs only after the operator selects **Test slot (writes key)**.
+
+Use one enrolled fingerprint after boot to capture the state poll, then
+start the slot test. The bridge reads lock info and the captured keypad poll
+on the account slot before attempting any writes. It checks the success
+status, slot echo, two-byte tag prefix and expected body of each write reply
+before sending the next. It then reads the same poll with the new shared key
+and compares the two authenticated payloads without logging either payload.
+The final log line reports the lengths, expected keypad payload shape and
+byte-for-byte equality. A successful write test leaves the lock slot changed
+but does not enable or persist a lock relay in the bridge.
+
 The experimental mode allows one exchange on a single BLE connection. It
 checks both two-byte tag prefixes, the known frame sizes and command sequence,
 and publishes the action event only after the poll reply was sent and

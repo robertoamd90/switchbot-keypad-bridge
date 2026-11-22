@@ -81,6 +81,10 @@ class SwitchbotKeypadBridge : public Component {
     this->gcm_diagnostics_ = enabled;
     this->pairing_ui_.set_gcm_diagnostics(enabled);
   }
+  void set_gcm_lock_slot_test(bool enabled) {
+    this->gcm_lock_slot_test_ = enabled;
+    this->pairing_ui_.set_gcm_lock_slot_test(enabled);
+  }
   void set_keypad_gcm_experimental(bool enabled) {
     this->keypad_gcm_experimental_ = enabled;
     this->pairing_ui_.set_keypad_gcm_experimental(enabled);
@@ -144,6 +148,7 @@ class SwitchbotKeypadBridge : public Component {
   // ----- Configuration / setup -----------------------------------------------
 
   bool gcm_diagnostics_{false};
+  bool gcm_lock_slot_test_{false};
 
   // Generates a fresh AES-128 session key into shared_key_ and persists it
   // to NVS — the one place keys are created (first boot and reset_pairing()).
