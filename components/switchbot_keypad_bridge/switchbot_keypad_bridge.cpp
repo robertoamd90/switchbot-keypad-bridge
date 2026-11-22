@@ -54,6 +54,14 @@ bool is_shared_slot(uint8_t slot) {
   return slot == SHARED_SLOT_ORIGINAL || slot == SHARED_SLOT_VISION;
 }
 
+bool advance_gcm_probe_nonce(std::array<uint8_t, 12> &nonce) {
+  for (auto byte = nonce.rbegin(); byte != nonce.rend(); ++byte) {
+    if (++*byte != 0)
+      return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -597,25 +605,34 @@ void SwitchbotKeypadBridge::update_keypad_gcm_probe_() {
     this->keypad_gcm_probe_active_ = false;
     this->keypad_gcm_probe_slot_ = 0;
     this->session_.reset();
-    ESP_LOGI(TAG, "Keypad GCM probe ended: first frame %s; next session uses CTR",
-             this->keypad_gcm_probe_frame_seen_ ? "checked" : "not received");
+    const auto stage = this->keypad_gcm_probe_stage_;
+    const char *result = stage == KeypadGcmProbeStage::FIRST_FRAME ? "first frame not received"
+                         : stage == KeypadGcmProbeStage::FOLLOW_UP ? "follow-up not received"
+                                                                  : "frame checks finished";
+    ESP_LOGI(TAG, "Keypad GCM probe ended: %s; next session uses CTR", result);
   }
   if (this->pairing_ui_.take_keypad_probe_request() && !this->keypad_gcm_probe_active_ &&
       this->keypad_paired_ && !this->lock_linked_ && !this->is_failed()) {
     this->keypad_gcm_probe_active_ = true;
     this->keypad_gcm_probe_started_ = now;
     this->keypad_gcm_probe_slot_ = 0;
-    this->keypad_gcm_probe_frame_seen_ = false;
+    this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FIRST_FRAME;
     this->session_.reset();
     ESP_LOGI(TAG, "Keypad GCM probe armed for 30 seconds; keypad actions suspended");
   }
 }
 
 void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame) {
-  if (this->keypad_gcm_probe_frame_seen_)
+  const auto stage = this->keypad_gcm_probe_stage_;
+  if (stage == KeypadGcmProbeStage::FINISHED)
     return;
   const auto *wire = reinterpret_cast<const uint8_t *>(frame.data());
   if (frame.size() == 8 && LockSession::is_iv_request(frame)) {
+    if (stage == KeypadGcmProbeStage::FOLLOW_UP) {
+      this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+      ESP_LOGI(TAG, "Keypad GCM probe: keypad requested a new handshake after the reply");
+      return;
+    }
     if (wire[7] != SHARED_SLOT_ORIGINAL) {
       ESP_LOGW(TAG, "Keypad GCM probe: skipping a session request outside the Touch test slot");
       return;
@@ -637,15 +654,61 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame) 
       wire[1] != this->keypad_gcm_probe_slot_) {
     return;
   }
-  this->keypad_gcm_probe_frame_seen_ = true;
   const uint8_t prefix[2] = {wire[2], wire[3]};
-  uint8_t scratch[LockSession::MAX_PAYLOAD];
-  const bool match = aes_gcm_decrypt_verify_prefix(
-      this->shared_key_.data(), this->keypad_gcm_probe_reply_.data() + 4,
-      wire + LockSession::HEADER_LEN, scratch, frame.size() - LockSession::HEADER_LEN, prefix);
-  mbedtls_platform_zeroize(scratch, sizeof(scratch));
+  std::array<uint8_t, 12> initial_nonce;
+  std::memcpy(initial_nonce.data(), this->keypad_gcm_probe_reply_.data() + 4, initial_nonce.size());
+  auto check_at = [&](const std::array<uint8_t, 12> &nonce, CommandType &type) {
+    uint8_t scratch[LockSession::MAX_PAYLOAD];
+    const size_t length = frame.size() - LockSession::HEADER_LEN;
+    const bool match = aes_gcm_decrypt_verify_prefix(this->shared_key_.data(), nonce.data(),
+        wire + LockSession::HEADER_LEN, scratch, length, prefix);
+    type = match ? decode_lock_command(scratch, length).type : CommandType::UNKNOWN;
+    mbedtls_platform_zeroize(scratch, sizeof(scratch));
+    return match;
+  };
+  auto reply_nonce = initial_nonce;
+  const bool reply_nonce_valid = advance_gcm_probe_nonce(reply_nonce);
+  auto next_nonce = reply_nonce;
+  if (!reply_nonce_valid || !advance_gcm_probe_nonce(next_nonce)) {
+    this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+    ESP_LOGW(TAG, "Keypad GCM probe: nonce counter overflow");
+    return;
+  }
+
+  CommandType initial_type;
+  const bool match = check_at(initial_nonce, initial_type);
+  if (stage == KeypadGcmProbeStage::FOLLOW_UP) {
+    CommandType plus_one_type, plus_two_type;
+    const bool plus_one = check_at(reply_nonce, plus_one_type);
+    const bool plus_two = check_at(next_nonce, plus_two_type);
+    ESP_LOGI(TAG, "Keypad GCM probe: follow-up length=%zu N=%s N+1=%s N+2=%s poll_at_N+2=%s",
+             frame.size(), match ? "match" : "no", plus_one ? "match" : "no",
+             plus_two ? "match" : "no", plus_two_type == CommandType::STATE_POLL ? "yes" : "no");
+    this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+    return;
+  }
   ESP_LOGI(TAG, "Keypad GCM probe: first frame length=%zu tag_prefix=%s nonce=initial",
            frame.size(), match ? "match" : "mismatch");
+  this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+  if (!match || initial_type != CommandType::UNLOCK) {
+    ESP_LOGI(TAG, "Keypad GCM probe: response requires a tag-matching unlock frame");
+    return;
+  }
+
+  // The lock client suggests N+1 for the reply. Only one payload is ever
+  // encrypted. A follow-up at N+1 is measured as possible reuse and ends the
+  // experiment, just like all other follow-up outcomes.
+  uint8_t response[LockSession::HEADER_LEN + sizeof(RESPONSE_UNLOCK)] = {0x01, wire[1]};
+  uint8_t tag[16];
+  if (!aes_gcm_encrypt_raw_key(this->shared_key_.data(), reply_nonce.data(), RESPONSE_UNLOCK,
+                              response + LockSession::HEADER_LEN, sizeof(RESPONSE_UNLOCK), tag)) {
+    return;
+  }
+  response[2] = tag[0];
+  response[3] = tag[1];
+  this->notify_(response, sizeof(response));
+  this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FOLLOW_UP;
+  ESP_LOGI(TAG, "Keypad GCM probe: sent diagnostic reply length=%zu nonce=N+1", sizeof(response));
 }
 
 void SwitchbotKeypadBridge::on_rx_frame_(const std::string &frame) {

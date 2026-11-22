@@ -143,6 +143,22 @@ actions during the window and sends no encrypted command reply. The next
 session after the window uses CTR. A match supports the initial request
 format; further work is needed to verify reply and counter rules.
 
+The dedicated Keypad Touch 3.1 connected to the ESP32-C3 and sent a 12-byte
+frame after the bridge advertised mode `0x01`, length 20 and an all-zero
+trailer. The two-byte tag prefix matched with the initial nonce and the
+existing association key. This is observed evidence for the first keypad to
+bridge frame. The diagnostic sent no encrypted response, so this run does not
+establish either reply nonce selection or subsequent command progression.
+
+The next version of **Test keypad GCM** sends one synthetic unlock response
+only after the first frame has a matching tag and decodes to an unlock. It uses
+the existing Touch response payload and the `N+1` reply hypothesis from the
+physical lock client. It then measures the first follow-up on that connection
+at `N`, `N+1` and `N+2`. It logs the matches and whether `N+2` yields a state
+poll. The probe never sends a second encrypted reply. A match at `N+1` could
+indicate reuse of the nonce used for the diagnostic reply; this is a bench
+experiment, and its counter schedule is not used for normal unlocks.
+
 A lock session response supplies real handshake bytes. Whether these can be
 served to a keypad, and whether a transparent central/peripheral relay can
 maintain a working conversation, still require a separate instrumented test.

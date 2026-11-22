@@ -1004,7 +1004,7 @@
     button.disabled = true;
     try {
       await api('POST', '/api/keypad/session-probe');
-      status.textContent = 'Use one fingerprint within 30 seconds and check the ESPHome logs. Keypad actions are suspended during the test.';
+      status.textContent = 'Use one fingerprint within 30 seconds. The test sends one diagnostic reply and checks the keypad’s next frame. Keypad actions are suspended during the test.';
       setTimeout(() => {
         status.textContent = 'Test window ended. See the ESPHome logs for the result.';
         button.disabled = false;
