@@ -165,10 +165,26 @@ frame's tag prefix matched at `N+1` only. This is evidence of nonce reuse in
 that experiment. It does not establish that the keypad accepted the reply,
 because it may send the follow-up independently.
 
-The current diagnostic withholds the encrypted reply and still checks the
+The no-reply diagnostic withheld the encrypted reply and still checked the
 first follow-up at `N`, `N+1` and `N+2`. It also reports whether a matching
 frame at `N+1` or `N+2` decodes as a state poll. This isolates the effect of
 the reply using the existing Keypad Touch association.
+
+In the no-reply run the first 12-byte frame matched at `N`. The keypad
+disconnected two seconds later and no follow-up arrived within the test window.
+In the prior run with a reply, it sent an eight-byte follow-up about one second
+later. This comparison supports the reply affecting the keypad's progression;
+it does not establish a safe response nonce. The user also observed a blinking
+green padlock. The exact indicator and sound sequence was not captured.
+
+The follow-up diagnostic now sends exactly one reply at `N+2`. This changes
+only the reply nonce compared with the earlier `N+1` test. The keypad frames
+observed earlier used `N` and `N+1`, so `N+2` tests a distinct reply nonce for
+this exchange. A valid state poll at `N+1` would support compatibility for
+the first reply. It would not establish a safe schedule for longer sessions,
+since the keypad might use `N+2` later. A follow-up at `N+2` would be another
+nonce collision. A timeout would rule out this reply format for this run and
+leave the genuine SwitchBot response format as the next evidence to collect.
 
 A lock session response supplies real handshake bytes. Whether these can be
 served to a keypad, and whether a transparent central/peripheral relay can
