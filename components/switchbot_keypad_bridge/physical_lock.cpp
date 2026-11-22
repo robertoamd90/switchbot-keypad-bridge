@@ -541,7 +541,9 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
                                          payload_len ? bytes + WIRE_HEADER_LEN : &empty_input,
                                          payload_len ? response.data() : &empty_output,
                                          payload_len, prefix)) {
-        error_out = "Lock response did not match the tag for this request's nonce.";
+        error_out = "Lock response did not match the tag for this request's nonce"
+                    " (wire_bytes=" + std::to_string(notify.size()) +
+                    ", payload_bytes=" + std::to_string(payload_len) + ").";
         return false;
       }
       return true;
