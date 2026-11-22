@@ -1,8 +1,8 @@
 # Keypad GCM investigation — issue #1
 
-Status: investigation tooling only. No GCM server handshake is advertised yet.
-CTR and existing saved associations remain in use. No key export or rotation is
-needed for the first test. Firmware compilation is distinct from hardware testing.
+CTR is the default. The optional `keypad_crypto_mode: gcm_experimental` setting
+enables a bench mode for standalone Keypad Touch 3.1 fingerprint sessions.
+It uses the saved keypad association and the bounded flow described below.
 
 SwitchBot bulletin [ORSA-2026-002](https://www.switcbot.live/pages/security-bulletins)
 lists Keypad Touch **2.9** as the first fixed firmware and names AES-GCM, unique
@@ -194,6 +194,34 @@ matches `N+2` or `N+3`, the proposed schedule collides and must stay out of
 normal mode. A disconnect with no third frame bounds the observed exchange to
 four distinct nonce values. The keypad's LED or beep may provide additional
 evidence of its reaction to the final reply.
+
+On Keypad Touch 3.1 the second reply was sent at `N+3`. The keypad disconnected
+two seconds later with no third frame observed. The user heard two beeps and
+saw the padlock stop blinking. This confirms the observed end of the exchange,
+but the beeps alone do not confirm how the keypad interpreted the last reply.
+
+For an event test on the paired standalone keypad, add this option beneath
+`switchbot_keypad_bridge:` and install via OTA:
+
+```yaml
+keypad_crypto_mode: gcm_experimental
+```
+
+Press one enrolled fingerprint and check for `GCM experimental unlock` in the
+ESPHome logs and the usual `Unlock` entity event in Home Assistant. Try again
+after the first disconnect. The custom event still uses the existing HA device
+permission and carries `method` and `index`.
+
+The experimental mode allows one exchange on a single BLE connection. It
+checks both two-byte tag prefixes, the known frame sizes and command sequence,
+and publishes the fingerprint event only after the poll reply was sent and
+the same connection disconnected within ten seconds without a third frame.
+It rejects unexpected frames, has a shared limit of three rejected exchanges
+per 60-second window, and handles neither a linked physical lock nor a CTR
+fallback. The limit is in RAM and can deny service to a legitimate user. A
+16-bit tag remains a protocol limit. Use the mode for event testing rather
+than as the authorization boundary for a real door. Remove the option or set
+`keypad_crypto_mode: ctr` to restore the original path with the saved pairing.
 
 A lock session response supplies real handshake bytes. Whether these can be
 served to a keypad, and whether a transparent central/peripheral relay can

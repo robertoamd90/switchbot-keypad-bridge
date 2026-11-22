@@ -55,6 +55,7 @@ class PairingUi {
   }
   void set_lock_linked(bool linked) { this->lock_linked_.store(linked); }
   void set_gcm_diagnostics(bool enabled) { this->gcm_diagnostics_ = enabled; }
+  void set_keypad_gcm_experimental(bool enabled) { this->keypad_gcm_experimental_ = enabled; }
   bool take_keypad_probe_request() { return this->keypad_probe_requested_.exchange(false); }
 
   // The embedded UI page, gzip-compressed and baked into flash by codegen
@@ -118,6 +119,7 @@ class PairingUi {
 
   httpd_handle_t server_{nullptr};
   bool gcm_diagnostics_{false};
+  bool keypad_gcm_experimental_{false};
   std::atomic<bool> keypad_probe_requested_{false};
   CloudClient    cloud_{};
   KeypadPairer   pairer_{};

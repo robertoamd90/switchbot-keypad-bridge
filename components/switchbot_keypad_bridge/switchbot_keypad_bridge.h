@@ -81,6 +81,10 @@ class SwitchbotKeypadBridge : public Component {
     this->gcm_diagnostics_ = enabled;
     this->pairing_ui_.set_gcm_diagnostics(enabled);
   }
+  void set_keypad_gcm_experimental(bool enabled) {
+    this->keypad_gcm_experimental_ = enabled;
+    this->pairing_ui_.set_keypad_gcm_experimental(enabled);
+  }
 
   // Report LOCKED on the next keypad poll, without operating a physical lock
   // or publishing a Lock event. Safe to call from local ESPHome automations.
@@ -155,9 +159,10 @@ class SwitchbotKeypadBridge : public Component {
 
   // Validation, decryption and decoding live in LockSession; the bridge
   // dispatches the resulting Action and owns the business logic.
-  void on_rx_frame_(const std::string &frame);
+  void on_rx_frame_(const std::string &frame, uint16_t connection);
   void update_keypad_gcm_probe_();
-  void inspect_keypad_gcm_frame_(const std::string &frame);
+  void inspect_keypad_gcm_frame_(const std::string &frame, uint16_t connection);
+  void reject_keypad_gcm_exchange_();
 
   void handle_command_(const FrameHeader &header, const DecodedCommand &command);
   void handle_state_poll_(const FrameHeader &header);
@@ -216,15 +221,14 @@ class SwitchbotKeypadBridge : public Component {
 
   struct QueuedEvent {
     enum Type { CONNECT, DISCONNECT, RX } type;
+    uint16_t connection;
     std::string frame;
   };
 
   std::mutex rx_mutex_;
   std::vector<QueuedEvent> rx_queue_;
 
-  void push_connect_();
-  void push_disconnect_();
-  void push_rx_(const std::string &frame);
+  void enqueue_ble_event_(QueuedEvent event);
 
   // ----- On-device setup wizard ----------------------------------------------
 
@@ -281,6 +285,12 @@ class SwitchbotKeypadBridge : public Component {
   enum class KeypadGcmProbeStage : uint8_t { FIRST_FRAME, WAIT_POLL, AFTER_POLL_REPLY, FINISHED };
   KeypadGcmProbeStage keypad_gcm_probe_stage_{KeypadGcmProbeStage::FIRST_FRAME};
   std::array<uint8_t, 20> keypad_gcm_probe_reply_{};
+  bool keypad_gcm_experimental_{false};
+  uint16_t keypad_gcm_connection_{BLE_HS_CONN_HANDLE_NONE};
+  uint32_t keypad_gcm_connection_started_{0};
+  uint32_t keypad_gcm_failures_since_{0};
+  uint8_t keypad_gcm_failures_{0};
+  DecodedCommand keypad_gcm_unlock_{};
 
   PhysicalLockClient physical_lock_client_{};
   LinkedLockInfo linked_lock_info_{};

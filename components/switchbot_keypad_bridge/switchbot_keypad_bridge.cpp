@@ -45,6 +45,9 @@ constexpr uint8_t SHARED_SLOT_ORIGINAL = 0x88;
 constexpr uint8_t SHARED_SLOT_VISION   = 0xC6;
 
 constexpr size_t AES_KEY_SIZE = 16;
+constexpr uint32_t GCM_EXCHANGE_TIMEOUT_MS = 10000;
+constexpr uint32_t GCM_FAILURE_WINDOW_MS = 60000;
+constexpr uint8_t GCM_FAILURE_LIMIT = 3;
 
 // Battery advert scan: one short active window per interval.
 constexpr uint32_t BATTERY_SCAN_DURATION_MS = 5000;
@@ -73,11 +76,11 @@ class SwitchbotKeypadBridge::ServerCallbacks : public NimBLEServerCallbacks {
   explicit ServerCallbacks(SwitchbotKeypadBridge *parent) : parent_(parent) {}
 
   void onConnect(NimBLEServer *server, NimBLEConnInfo &info) override {
-    this->parent_->push_connect_();
+    this->parent_->enqueue_ble_event_({QueuedEvent::CONNECT, info.getConnHandle(), {}});
   }
 
   void onDisconnect(NimBLEServer *server, NimBLEConnInfo &info, int reason) override {
-    this->parent_->push_disconnect_();
+    this->parent_->enqueue_ble_event_({QueuedEvent::DISCONNECT, info.getConnHandle(), {}});
   }
 
  private:
@@ -92,7 +95,7 @@ class SwitchbotKeypadBridge::RxCharCallbacks : public NimBLECharacteristicCallba
     const std::string value = characteristic->getValue();
     if (value.empty())
       return;
-    this->parent_->push_rx_(value);
+    this->parent_->enqueue_ble_event_({QueuedEvent::RX, info.getConnHandle(), value});
   }
 
  private:
@@ -115,19 +118,9 @@ class SwitchbotKeypadBridge::BatteryScanCallbacks : public NimBLEScanCallbacks {
 // Thread-safe event queueing
 // ---------------------------------------------------------------------------
 
-void SwitchbotKeypadBridge::push_connect_() {
+void SwitchbotKeypadBridge::enqueue_ble_event_(QueuedEvent event) {
   std::lock_guard<std::mutex> lk(this->rx_mutex_);
-  this->rx_queue_.push_back({QueuedEvent::CONNECT, ""});
-}
-
-void SwitchbotKeypadBridge::push_disconnect_() {
-  std::lock_guard<std::mutex> lk(this->rx_mutex_);
-  this->rx_queue_.push_back({QueuedEvent::DISCONNECT, ""});
-}
-
-void SwitchbotKeypadBridge::push_rx_(const std::string &frame) {
-  std::lock_guard<std::mutex> lk(this->rx_mutex_);
-  this->rx_queue_.push_back({QueuedEvent::RX, frame});
+  this->rx_queue_.push_back(std::move(event));
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +202,9 @@ void SwitchbotKeypadBridge::setup() {
   }
   ESP_LOGI(TAG, "Ready. Advertising on %s",
            NimBLEDevice::getAddress().toString().c_str());
+  if (this->keypad_gcm_experimental_) {
+    ESP_LOGI(TAG, "Keypad crypto mode: gcm_experimental (standalone fingerprint test)");
+  }
 
   this->pairing_ui_.set_shared_key(this->shared_key_);
   this->pairing_ui_.set_on_paired_callback(
@@ -274,11 +270,39 @@ void SwitchbotKeypadBridge::loop() {
   for (const auto &ev : pending) {
     if (ev.type == QueuedEvent::CONNECT) {
       ESP_LOGI(TAG, "Keypad connected");
-      this->keypad_gcm_probe_slot_ = 0;
+      if (this->keypad_gcm_experimental_) {
+        if (this->keypad_gcm_connection_ == BLE_HS_CONN_HANDLE_NONE) {
+          this->keypad_gcm_connection_ = ev.connection;
+          this->keypad_gcm_connection_started_ = millis();
+          this->keypad_gcm_probe_slot_ = 0;
+          this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FIRST_FRAME;
+          this->keypad_gcm_unlock_ = {};
+        }
+      } else {
+        this->keypad_gcm_probe_slot_ = 0;
+      }
       this->session_.reset_transport();
     } else if (ev.type == QueuedEvent::DISCONNECT) {
       ESP_LOGI(TAG, "Keypad disconnected, restarting advertising");
-      this->keypad_gcm_probe_slot_ = 0;
+      if (this->keypad_gcm_experimental_) {
+        if (ev.connection == this->keypad_gcm_connection_) {
+          const auto unlock = this->keypad_gcm_unlock_;
+          const bool complete = this->keypad_gcm_probe_stage_ == KeypadGcmProbeStage::AFTER_POLL_REPLY &&
+              millis() - this->keypad_gcm_connection_started_ < GCM_EXCHANGE_TIMEOUT_MS;
+          this->keypad_gcm_connection_ = BLE_HS_CONN_HANDLE_NONE;
+          this->keypad_gcm_probe_slot_ = 0;
+          this->keypad_gcm_unlock_ = {};
+          this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+          if (complete && unlock.type == CommandType::UNLOCK && this->keypad_paired_ && !this->lock_linked_) {
+            this->keypad_state_.unlock(millis());
+            ESP_LOGI(TAG, "GCM experimental unlock: method=%s index=%d",
+                     unlock_method_name(unlock.method), unlock.credential_index);
+            this->publish_unlock_(unlock.method, unlock.credential_index);
+          }
+        }
+      } else {
+        this->keypad_gcm_probe_slot_ = 0;
+      }
       if (this->keypad_gcm_probe_active_ &&
           this->keypad_gcm_probe_stage_ == KeypadGcmProbeStage::AFTER_POLL_REPLY) {
         this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
@@ -287,7 +311,7 @@ void SwitchbotKeypadBridge::loop() {
       this->session_.reset_transport();
       NimBLEDevice::startAdvertising();
     } else if (ev.type == QueuedEvent::RX) {
-      this->on_rx_frame_(ev.frame);
+      this->on_rx_frame_(ev.frame, ev.connection);
     }
   }
 
@@ -603,7 +627,7 @@ bool SwitchbotKeypadBridge::prepare_ble_() {
 // ---------------------------------------------------------------------------
 
 void SwitchbotKeypadBridge::update_keypad_gcm_probe_() {
-  if (!this->gcm_diagnostics_)
+  if (!this->gcm_diagnostics_ || this->keypad_gcm_experimental_)
     return;
   const uint32_t now = millis();
   if (this->keypad_gcm_probe_active_ && now - this->keypad_gcm_probe_started_ >= 30000) {
@@ -628,14 +652,26 @@ void SwitchbotKeypadBridge::update_keypad_gcm_probe_() {
   }
 }
 
-void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame) {
+void SwitchbotKeypadBridge::reject_keypad_gcm_exchange_() {
+  this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+  this->keypad_gcm_unlock_ = {};
+  if (this->keypad_gcm_experimental_) {
+    if (this->keypad_gcm_failures_ == 0)
+      this->keypad_gcm_failures_since_ = millis();
+    if (++this->keypad_gcm_failures_ == GCM_FAILURE_LIMIT) {
+      ESP_LOGW(TAG, "GCM experimental rejection limit reached; waiting for the failure window to expire");
+    }
+  }
+}
+
+void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, uint16_t connection) {
   const auto stage = this->keypad_gcm_probe_stage_;
   if (stage == KeypadGcmProbeStage::FINISHED)
     return;
   const auto *wire = reinterpret_cast<const uint8_t *>(frame.data());
   if (frame.size() == 8 && LockSession::is_iv_request(frame)) {
     if (stage != KeypadGcmProbeStage::FIRST_FRAME) {
-      this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+      this->reject_keypad_gcm_exchange_();
       ESP_LOGI(TAG, "Keypad GCM probe: keypad requested a new handshake after a diagnostic reply");
       return;
     }
@@ -651,24 +687,39 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame) 
       esp_fill_random(reply.data() + 4, 12);
       this->keypad_gcm_probe_slot_ = wire[7];
     }
-    this->notify_(reply.data(), reply.size());
+    if (!this->tx_characteristic_->notify(reply.data(), reply.size(), connection)) {
+      this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+      ESP_LOGW(TAG, "Keypad GCM: session announcement could not be sent");
+      return;
+    }
     ESP_LOGI(TAG, "Keypad GCM probe: advertised mode=0x01 length=20 trailer=all-zero");
     return;
   }
   if (this->keypad_gcm_probe_slot_ == 0 || frame.size() <= LockSession::HEADER_LEN ||
       frame.size() > LockSession::MAX_PACKET || wire[0] != 0x57 ||
       wire[1] != this->keypad_gcm_probe_slot_) {
+    if (this->keypad_gcm_experimental_ && this->keypad_gcm_probe_slot_ != 0) {
+      this->reject_keypad_gcm_exchange_();
+      ESP_LOGW(TAG, "GCM experimental exchange rejected: invalid frame envelope");
+    }
+    return;
+  }
+  if (this->keypad_gcm_experimental_ &&
+      ((stage == KeypadGcmProbeStage::FIRST_FRAME && frame.size() != 12) ||
+       (stage == KeypadGcmProbeStage::WAIT_POLL && frame.size() != 8))) {
+    this->reject_keypad_gcm_exchange_();
+    ESP_LOGW(TAG, "GCM experimental exchange rejected: unexpected frame length");
     return;
   }
   const uint8_t prefix[2] = {wire[2], wire[3]};
   std::array<uint8_t, 12> initial_nonce;
   std::memcpy(initial_nonce.data(), this->keypad_gcm_probe_reply_.data() + 4, initial_nonce.size());
-  auto check_at = [&](const std::array<uint8_t, 12> &nonce, CommandType &type) {
+  auto check_at = [&](const std::array<uint8_t, 12> &nonce, DecodedCommand &command) {
     uint8_t scratch[LockSession::MAX_PAYLOAD];
     const size_t length = frame.size() - LockSession::HEADER_LEN;
     const bool match = aes_gcm_decrypt_verify_prefix(this->shared_key_.data(), nonce.data(),
         wire + LockSession::HEADER_LEN, scratch, length, prefix);
-    type = match ? decode_lock_command(scratch, length).type : CommandType::UNKNOWN;
+    command = match ? decode_lock_command(scratch, length) : DecodedCommand{};
     mbedtls_platform_zeroize(scratch, sizeof(scratch));
     return match;
   };
@@ -691,32 +742,31 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame) 
     }
     response[2] = tag[0];
     response[3] = tag[1];
-    this->notify_(response, LockSession::HEADER_LEN + length);
-    return true;
+    return this->tx_characteristic_->notify(response, LockSession::HEADER_LEN + length, connection);
   };
 
   if (stage == KeypadGcmProbeStage::AFTER_POLL_REPLY) {
-    CommandType type;
-    const bool plus_two = check_at(nonces[2], type);
-    const bool plus_three = check_at(nonces[3], type);
+    DecodedCommand command;
+    const bool plus_two = check_at(nonces[2], command);
+    const bool plus_three = check_at(nonces[3], command);
     ESP_LOGI(TAG, "Keypad GCM probe: third frame length=%zu N+2=%s N+3=%s",
              frame.size(), plus_two ? "match" : "no", plus_three ? "match" : "no");
-    this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+    this->reject_keypad_gcm_exchange_();
     return;
   }
 
-  CommandType initial_type;
-  const bool match = check_at(initial_nonce, initial_type);
+  DecodedCommand initial_command;
+  const bool match = check_at(initial_nonce, initial_command);
   if (stage == KeypadGcmProbeStage::WAIT_POLL) {
-    CommandType plus_one_type, plus_two_type;
-    const bool plus_one = check_at(nonces[1], plus_one_type);
-    const bool plus_two = check_at(nonces[2], plus_two_type);
+    DecodedCommand plus_one_command, plus_two_command;
+    const bool plus_one = check_at(nonces[1], plus_one_command);
+    const bool plus_two = check_at(nonces[2], plus_two_command);
     ESP_LOGI(TAG, "Keypad GCM probe: N+2 reply follow-up length=%zu N=%s N+1=%s N+2=%s poll_at_N+1=%s poll_at_N+2=%s",
              frame.size(), match ? "match" : "no", plus_one ? "match" : "no",
-             plus_two ? "match" : "no", plus_one && plus_one_type == CommandType::STATE_POLL ? "yes" : "no",
-             plus_two && plus_two_type == CommandType::STATE_POLL ? "yes" : "no");
+             plus_two ? "match" : "no", plus_one_command.type == CommandType::STATE_POLL ? "yes" : "no",
+             plus_two_command.type == CommandType::STATE_POLL ? "yes" : "no");
     this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
-    if (plus_one && plus_one_type == CommandType::STATE_POLL && !match && !plus_two) {
+    if (plus_one && plus_one_command.type == CommandType::STATE_POLL && !match && !plus_two) {
       uint8_t state_payload[1 + sizeof(STATE_PAYLOAD_TAIL)];
       state_payload[0] = static_cast<uint8_t>(KeypadState::LockState::UNLOCKED);
       std::memcpy(state_payload + 1, STATE_PAYLOAD_TAIL, sizeof(STATE_PAYLOAD_TAIL));
@@ -724,26 +774,45 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame) 
         this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::AFTER_POLL_REPLY;
         ESP_LOGI(TAG, "Keypad GCM probe: sent poll reply nonce=N+3");
       }
+    } else {
+      this->reject_keypad_gcm_exchange_();
     }
     return;
   }
   ESP_LOGI(TAG, "Keypad GCM probe: first frame length=%zu tag_prefix=%s nonce=initial",
            frame.size(), match ? "match" : "mismatch");
   this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
-  if (!match || initial_type != CommandType::UNLOCK) {
-    ESP_LOGI(TAG, "Keypad GCM probe: reply requires a tag-matching unlock frame");
+  if (!match || initial_command.type != CommandType::UNLOCK ||
+      (this->keypad_gcm_experimental_ && initial_command.method != UnlockMethod::FINGERPRINT)) {
+    if (!match) {
+      this->reject_keypad_gcm_exchange_();
+    }
+    ESP_LOGI(TAG, "Keypad GCM: missing supported tag-matching unlock frame");
     return;
   }
 
   if (send_reply(nonces[2], RESPONSE_UNLOCK, sizeof(RESPONSE_UNLOCK))) {
+    this->keypad_gcm_unlock_ = initial_command;
     this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::WAIT_POLL;
     ESP_LOGI(TAG, "Keypad GCM probe: sent diagnostic reply nonce=N+2");
   }
 }
 
-void SwitchbotKeypadBridge::on_rx_frame_(const std::string &frame) {
+void SwitchbotKeypadBridge::on_rx_frame_(const std::string &frame, uint16_t connection) {
+  if (this->keypad_gcm_experimental_) {
+    const uint32_t now = millis();
+    if (this->keypad_gcm_failures_ != 0 && now - this->keypad_gcm_failures_since_ >= GCM_FAILURE_WINDOW_MS) {
+      this->keypad_gcm_failures_ = 0;
+    }
+    if (this->keypad_paired_ && !this->lock_linked_ && connection == this->keypad_gcm_connection_ &&
+        now - this->keypad_gcm_connection_started_ < GCM_EXCHANGE_TIMEOUT_MS &&
+        this->keypad_gcm_failures_ < GCM_FAILURE_LIMIT) {
+      this->inspect_keypad_gcm_frame_(frame, connection);
+    }
+    return;
+  }
   if (this->keypad_gcm_probe_active_) {
-    this->inspect_keypad_gcm_frame_(frame);
+    this->inspect_keypad_gcm_frame_(frame, connection);
     return;
   }
   switch (this->session_.process_frame(frame)) {

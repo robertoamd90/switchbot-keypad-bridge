@@ -347,7 +347,7 @@ esp_err_t PairingUi::handle_login_(httpd_req_t *req) {
   cJSON_AddStringToObject(resp, "region", self->cloud_.region().c_str());
   cJSON_AddBoolToObject(resp, "keypad_paired", self->keypad_paired_.load());
   cJSON_AddBoolToObject(resp, "lock_linked", self->lock_linked_.load());
-  cJSON_AddBoolToObject(resp, "keypad_session_probe", self->gcm_diagnostics_ &&
+  cJSON_AddBoolToObject(resp, "keypad_session_probe", self->gcm_diagnostics_ && !self->keypad_gcm_experimental_ &&
                           self->keypad_paired_.load() && !self->lock_linked_.load());
   return reply_json_(req, json_take(resp).c_str());
 }
@@ -468,8 +468,8 @@ esp_err_t PairingUi::handle_keypad_session_probe_(httpd_req_t *req) {
   if (!self->cloud_.is_logged_in()) {
     return reply_error_(req, "401 Unauthorized", "Sign in first.");
   }
-  if (!self->keypad_paired_.load() || self->lock_linked_.load()) {
-    return reply_error_(req, "409 Conflict", "The probe requires a linked keypad in standalone mode.");
+  if (!self->keypad_paired_.load() || self->lock_linked_.load() || self->keypad_gcm_experimental_) {
+    return reply_error_(req, "409 Conflict", "The probe requires a linked keypad in standalone CTR mode.");
   }
   self->keypad_probe_requested_.store(true);
   return reply_json_(req, "{}");
@@ -534,8 +534,8 @@ esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {
 esp_err_t PairingUi::handle_lock_link_(httpd_req_t *req) {
   auto *self = static_cast<PairingUi *>(req->user_ctx);
   self->touch_activity_();
-  if (self->gcm_diagnostics_) {
-    return reply_error_(req, "409 Conflict", "Turn off gcm_diagnostics to link a lock.");
+  if (self->gcm_diagnostics_ || self->keypad_gcm_experimental_) {
+    return reply_error_(req, "409 Conflict", "Use CTR mode and turn off GCM diagnostics to link a lock.");
   }
   std::string body = read_body_(req);
   std::string mac = extract_json_str(body, "mac");
