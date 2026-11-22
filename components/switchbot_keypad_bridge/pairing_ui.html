@@ -1155,11 +1155,15 @@
       try {
         const data = await api('POST', '/api/lock/session-probe', { mac: device.mac });
         result.textContent = `Status ${data.status}, mode ${data.mode}, ${data.length} bytes, trailer ${data.trailer}`;
-        if (data.status_reply_length) {
-          const matches = ['N', 'N+1', 'N+2'].filter((_, i) => data.nonce_matches & (1 << i));
-          result.textContent += ` · State reply ${data.status_reply_length} bytes, status ${data.status_reply_code}, header byte 1 ${data.status_reply_byte1}, tag matches ${matches.join(', ') || 'none'}`;
+        for (const [index, reply] of (data.status_replies || []).entries()) {
+          const offsets = [0, 1, 2].filter(i => reply.nonce_matches & (1 << i));
+          result.textContent += ` · State reply ${index + 1}: ${reply.length} bytes, status ${reply.status}, slot echo ${reply.slot_echo ? 'yes' : 'no'}, tag offsets ${offsets.join(', ') || 'none'}`;
         }
         if (data.status_query_error) result.textContent += ` · ${data.status_query_error}`;
+        if (data.keypad_slot_length) {
+          result.textContent += ` · Keypad slot: status ${data.keypad_slot_status}, mode ${data.keypad_slot_mode}, ${data.keypad_slot_length} bytes`;
+        }
+        if (data.keypad_slot_error) result.textContent += ` · ${data.keypad_slot_error}`;
       } catch (err) {
         result.textContent = err.message;
       } finally {

@@ -254,24 +254,25 @@ bool PhysicalLockClient::send_plaintext_sequence(
 }
 
 bool PhysicalLockClient::probe_session(const Config &config, SessionProbe &probe,
-                                       std::string &error_out) {
+                                       std::string &error_out, bool announcement_only) {
   std::vector<std::vector<uint8_t>> unused_responses;
   probe = {};
-  return this->exchange_(config, {}, unused_responses, error_out, nullptr, nullptr, &probe);
+  return this->exchange_(config, {}, unused_responses, error_out, nullptr, nullptr, &probe, announcement_only);
 }
 
 void PhysicalLockClient::inspect_gcm_status_reply_(const Config &config, const Session &session,
-                                                   const std::string &wire, SessionProbe &probe) {
+                                                   const std::string &wire, StatusProbeReply &probe,
+                                                   std::string &error) {
   probe.response_length = wire.size();
   if (wire.size() < WIRE_HEADER_LEN || wire.size() > 256) {
-    probe.status_query_error = "Unexpected lock-info reply length.";
+    error = "Unexpected lock-info reply length.";
     return;
   }
   const auto *bytes = reinterpret_cast<const uint8_t *>(wire.data());
   probe.response_status = bytes[0];
   probe.response_header_byte1 = bytes[1];
   if (wire.size() == WIRE_HEADER_LEN) {
-    probe.status_query_error = "Lock-info reply has no encrypted payload.";
+    error = "Lock-info reply has no encrypted payload.";
     return;
   }
   const uint8_t prefix[2] = {bytes[2], bytes[3]};
@@ -292,7 +293,7 @@ bool PhysicalLockClient::exchange_(
     const Config &config, const std::vector<std::vector<uint8_t>> &commands,
     std::vector<std::vector<uint8_t>> &responses, std::string &error_out,
     const ProgressCallback &progress, const ResponseCallback &response_callback,
-    SessionProbe *session_probe) {
+    SessionProbe *session_probe, bool announcement_only) {
 
   NimBLEClient *client = nullptr;
   NimBLERemoteCharacteristic *rx = nullptr;
@@ -335,17 +336,31 @@ bool PhysicalLockClient::exchange_(
   } else if (session_probe != nullptr) {
     session_probe->announcement = std::move(notify);
     ok = true;
-    if (this->parse_session_response_(session_probe->announcement, session, session_probe->status_query_error) &&
+    if (!announcement_only &&
+        this->parse_session_response_(session_probe->announcement, session, session_probe->status_query_error) &&
         session.mode == CryptoMode::GCM) {
       size_t length = 0;
       const auto *query = lock_info_plaintext(config.model, length);
+      auto &probe_error = session_probe->status_query_error;
       if (query == nullptr) {
-        session_probe->status_query_error = "No read-only status query for this lock model.";
-      } else if (this->send_encrypted_(config, session, rx, query, length, session_probe->status_query_error, false)) {
-        if (wait_notify(waiter, 2500, notify)) {
-          this->inspect_gcm_status_reply_(config, session, notify, *session_probe);
-        } else {
-          session_probe->status_query_error = "No reply to the GCM lock-info query.";
+        probe_error = "No read-only status query for this lock model.";
+      } else {
+        for (auto &reply : session_probe->replies) {
+          if (!this->send_encrypted_(config, session, rx, query, length, probe_error, false))
+            break;
+          if (!wait_notify(waiter, 2500, notify)) {
+            probe_error = "No reply to the GCM lock-info query.";
+            break;
+          }
+          this->inspect_gcm_status_reply_(config, session, notify, reply, probe_error);
+          // Try the next request only after a unique match at the current
+          // nonce, as seen on the reference lock. Otherwise N+1 could already
+          // have been used by the remote response.
+          if (reply.response_status != 0x01 || reply.nonce_matches != 1 ||
+              std::all_of(session.gcm_iv.begin(), session.gcm_iv.end(), [](uint8_t b) { return b == 0xFF; })) {
+            break;
+          }
+          increment_gcm_iv(session.gcm_iv);
         }
       }
     }
@@ -463,6 +478,10 @@ bool PhysicalLockClient::provision_and_verify_shared_key(
       return false;
     }
     if (!this->parse_session_response_(notify, session, error_out)) {
+      return false;
+    }
+    if (session.mode == CryptoMode::GCM && commands.size() > 1) {
+      error_out = "GCM lock provisioning stopped before writes: command counter progression is unverified.";
       return false;
     }
 

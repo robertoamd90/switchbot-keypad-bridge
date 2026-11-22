@@ -226,6 +226,47 @@ The bridge-side unlock event and the keypad's visible outcome are separate
 acceptance criteria. Use the genuine lock reply data as the next reference
 before changing the response format or calling fingerprint operation reliable.
 
+The subsequent read-only query to the updated physical lock used the account
+key and initial nonce `N`. The reply had status `0x01`, header byte 1 `0xE8`,
+and length 20. Its two-byte tag prefix matched at `N` only. This is evidence
+of the same key and nonce being used in both directions for that particular
+account-slot exchange. The request slot was not logged, so this capture does
+not establish whether byte 1 is an echo of it. Neither finding establishes
+the nonce or header rules on the dedicated keypad slot. Mirroring `N` for
+the bridge's keypad reply would reuse the nonce already used by the keypad
+to encrypt its first command.
+
+The [public Keypad BLE API](https://github.com/OpenWonderLabs/SwitchBotAPI-BLE/blob/latest/devicetypes/keypad.md)
+documents advertisements, not the paired GCM exchange. A useful vendor
+reference would give the response header, wire tag length, nonce rule and
+whether the two directions use separate keys on the keypad pairing slot. Ask
+for a worked fingerprint unlock plus state-poll exchange or synthetic vectors.
+The CTR baseline is available with the existing pairing while this is pending.
+
+A local alternative uses a spare lock on the bench. `LockLinker` already
+provisions the bridge's shared key into slot `0x88` for a Touch-family keypad.
+On that spare lock only, use the existing provisioning flow once, then run the
+read-only status probe on the shared slot instead of the account slot. Report
+the mode, response header, size, and tag match at each candidate nonce. This
+changes the key slot on the spare lock, so it must not be run on a lock in use.
+The result isolates the slot difference from the account probe. It is still a
+state query, not proof of the original fingerprint reply semantics.
+
+Before changing the installed lock's slot, **Test session** now runs a
+configuration-preserving preflight on the same lock. It compares the two
+account-slot status replies in one GCM session, sending the second request
+at `N+1` only if the first reply matched uniquely at `N`. It reports whether
+the reply echoes the requested slot. It then requests just a session
+announcement for the keypad slot. The keypad-slot probe uses no key and sends
+no encrypted command. The announcement reveals which mode the lock advertises
+for that slot, but cannot establish response authentication on it.
+
+The old lock-link provisioning path reused the initial GCM nonce on each of
+its key-slot writes and used an unverified reply counter. It now stops before
+the first write if the lock negotiates GCM for that multi-command sequence.
+Do not interpret a successful status preflight as permission to use the old
+provisioning behavior on an installed lock.
+
 The experimental mode allows one exchange on a single BLE connection. It
 checks both two-byte tag prefixes, the known frame sizes and command sequence,
 and publishes the action event only after the poll reply was sent and

@@ -49,18 +49,23 @@ class PhysicalLockClient {
   using CommandProgressCallback = std::function<void(size_t command_index)>;
   using ResponseCallback = std::function<void(const std::vector<uint8_t> &response)>;
 
-  struct SessionProbe {
-    std::string announcement;
-    std::string status_query_error;
+  struct StatusProbeReply {
     size_t response_length{0};
     uint8_t response_status{0};
     uint8_t response_header_byte1{0};
-    uint8_t nonce_matches{0};  // bits 0–2 correspond to N through N+2
+    uint8_t nonce_matches{0};  // bits 0–2 relative to this request's nonce
+  };
+
+  struct SessionProbe {
+    std::string announcement;
+    std::string status_query_error;
+    std::array<StatusProbeReply, 2> replies{};
   };
 
   // Observe the session announcement and one GCM lock-info response. The
   // query reads lock state using the account slot and key.
-  bool probe_session(const Config &config, SessionProbe &probe, std::string &error_out);
+  bool probe_session(const Config &config, SessionProbe &probe, std::string &error_out,
+                     bool announcement_only = false);
 
   // Verify that the configured key/slot can open an encrypted BLE session and
   // return a plausible lock-info payload.
@@ -102,7 +107,7 @@ class PhysicalLockClient {
   bool exchange_(const Config &config, const std::vector<std::vector<uint8_t>> &commands,
                  std::vector<std::vector<uint8_t>> &responses, std::string &error_out,
                  const ProgressCallback &progress, const ResponseCallback &response_callback,
-                 SessionProbe *session_probe);
+                 SessionProbe *session_probe, bool announcement_only = false);
   enum class CryptoMode : uint8_t { CTR, GCM };
 
   struct Session {
@@ -112,7 +117,7 @@ class PhysicalLockClient {
   };
 
   void inspect_gcm_status_reply_(const Config &config, const Session &session,
-                                 const std::string &wire, SessionProbe &probe);
+                                 const std::string &wire, StatusProbeReply &reply, std::string &error);
 
   bool connect_(const Config &config, NimBLEClient *&client,
                 NimBLERemoteCharacteristic *&rx,

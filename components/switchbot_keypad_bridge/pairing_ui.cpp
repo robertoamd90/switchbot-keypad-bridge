@@ -529,19 +529,41 @@ esp_err_t PairingUi::handle_lock_session_probe_(httpd_req_t *req) {
   cJSON_AddNumberToObject(result, "mode", mode);
   cJSON_AddNumberToObject(result, "length", reply.size());
   cJSON_AddStringToObject(result, "trailer", trailer);
-  if (probe.response_length != 0) {
-    ESP_LOGI(TAG, "Lock GCM status reply: status=0x%02X byte1=0x%02X length=%zu N=%s N+1=%s N+2=%s",
-             static_cast<unsigned>(probe.response_status), static_cast<unsigned>(probe.response_header_byte1),
-             probe.response_length, (probe.nonce_matches & 1) ? "match" : "no",
-             (probe.nonce_matches & 2) ? "match" : "no", (probe.nonce_matches & 4) ? "match" : "no");
-    cJSON_AddNumberToObject(result, "status_reply_length", probe.response_length);
-    cJSON_AddNumberToObject(result, "status_reply_code", probe.response_status);
-    cJSON_AddNumberToObject(result, "status_reply_byte1", probe.response_header_byte1);
-    cJSON_AddNumberToObject(result, "nonce_matches", probe.nonce_matches);
+  cJSON *status_replies = cJSON_AddArrayToObject(result, "status_replies");
+  for (size_t i = 0; i < probe.replies.size(); ++i) {
+    const auto &status_reply = probe.replies[i];
+    if (status_reply.response_length == 0)
+      break;
+    ESP_LOGI(TAG, "Lock GCM status reply #%zu: request=N+%zu status=0x%02X slot_echo=%s length=%zu tag_offsets=%u",
+             i + 1, i, static_cast<unsigned>(status_reply.response_status),
+             status_reply.response_header_byte1 == config.key_id ? "yes" : "no", status_reply.response_length,
+             static_cast<unsigned>(status_reply.nonce_matches));
+    cJSON *item = cJSON_CreateObject();
+    cJSON_AddNumberToObject(item, "length", status_reply.response_length);
+    cJSON_AddNumberToObject(item, "status", status_reply.response_status);
+    cJSON_AddBoolToObject(item, "slot_echo", status_reply.response_header_byte1 == config.key_id);
+    cJSON_AddNumberToObject(item, "nonce_matches", status_reply.nonce_matches);
+    cJSON_AddItemToArray(status_replies, item);
   }
   if (!probe.status_query_error.empty()) {
     ESP_LOGW(TAG, "Lock GCM status query: %s", probe.status_query_error.c_str());
     cJSON_AddStringToObject(result, "status_query_error", probe.status_query_error.c_str());
+  }
+  PhysicalLockClient::Config keypad_slot;
+  keypad_slot.mac = config.mac;
+  keypad_slot.key_id = shared_slot_for_family(static_cast<KeypadFamily>(self->keypad_family_.load()));
+  PhysicalLockClient::SessionProbe keypad_probe;
+  if (client.probe_session(keypad_slot, keypad_probe, error, true) && keypad_probe.announcement.size() >= 4) {
+    const auto keypad_status = static_cast<uint8_t>(keypad_probe.announcement[0]);
+    const auto keypad_mode = static_cast<uint8_t>(keypad_probe.announcement[2]);
+    ESP_LOGI(TAG, "Lock keypad-slot announcement: slot=0x%02X status=0x%02X mode=0x%02X length=%zu",
+             keypad_slot.key_id, keypad_status, keypad_mode, keypad_probe.announcement.size());
+    cJSON_AddNumberToObject(result, "keypad_slot_status", keypad_status);
+    cJSON_AddNumberToObject(result, "keypad_slot_mode", keypad_mode);
+    cJSON_AddNumberToObject(result, "keypad_slot_length", keypad_probe.announcement.size());
+  } else {
+    ESP_LOGI(TAG, "Lock keypad-slot announcement: slot=0x%02X no usable response", keypad_slot.key_id);
+    cJSON_AddStringToObject(result, "keypad_slot_error", "No usable keypad-slot announcement.");
   }
   return reply_json_(req, json_take(result).c_str());
 }
