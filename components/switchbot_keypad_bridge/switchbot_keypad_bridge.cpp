@@ -456,6 +456,14 @@ void SwitchbotKeypadBridge::apply_pending_lock_relay_() {
 }
 
 void SwitchbotKeypadBridge::reset_pairing() {
+  // Finish HTTP handlers before checking jobs, so a handler cannot start
+  // provisioning while the shared key is being replaced.
+  this->pairing_ui_.stop();
+  if (this->pairing_ui_.has_running_job() || this->lock_relay_busy_.load()) {
+    ESP_LOGW(TAG, "Reset deferred: wait for the current BLE job to finish, then press Reset again");
+    this->pairing_ui_.start();
+    return;
+  }
   ESP_LOGI(TAG, "Resetting links — rotating the shared key and re-opening the setup wizard");
 
   // Rotate the key and swap it into the live crypto slot: the previously
@@ -463,8 +471,14 @@ void SwitchbotKeypadBridge::reset_pairing() {
   this->create_shared_key_();
   if (!this->import_aes_key_()) {
     ESP_LOGE(TAG, "Key rotation failed — reset aborted");
+    this->pairing_ui_.start();
     return;
   }
+  this->pairing_ui_.clear_job_notifications();
+  this->pending_pair_apply_.store(false);
+  this->pending_lock_apply_.store(false);
+  this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FINISHED;
+  this->keypad_gcm_connection_ = BLE_HS_CONN_HANDLE_NONE;
 
   // Stop an in-flight battery scan window: the wizard's own blocking scans
   // share the NimBLE scan singleton and must not race it.
@@ -505,10 +519,6 @@ void SwitchbotKeypadBridge::reset_pairing() {
 }
 
 void ResetButton::press_action() {
-  if (this->parent_->is_pairing_active()) {
-    ESP_LOGW(TAG, "Setup wizard is already active, ignoring Reset action");
-    return;
-  }
   this->parent_->reset_pairing();
 }
 

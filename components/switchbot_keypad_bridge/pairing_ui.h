@@ -85,6 +85,11 @@ class PairingUi {
   }
 
   bool is_running() const { return this->server_ != nullptr; }
+  bool has_running_job() const {
+    return this->pairer_.state() == KeypadPairer::State::RUNNING ||
+           this->linker_.state() == LockLinker::State::RUNNING;
+  }
+  void clear_job_notifications();
 
   // Idle shutdown: stops the server once no request has arrived for
   // `timeout_ms`. Refuses to fire while a pairing or lock-link job is still

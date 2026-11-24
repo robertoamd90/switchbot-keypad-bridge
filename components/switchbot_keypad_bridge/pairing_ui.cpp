@@ -169,6 +169,14 @@ void PairingUi::poll_jobs() {
   }
 }
 
+void PairingUi::clear_job_notifications() {
+  std::lock_guard<std::mutex> lock(this->jobs_mu_);
+  this->pairing_job_id_.clear();
+  this->link_job_id_.clear();
+  this->success_notified_ = true;
+  this->link_notified_ = true;
+}
+
 void PairingUi::touch_activity_() {
   this->last_activity_ms_.store(millis(), std::memory_order_relaxed);
 }
