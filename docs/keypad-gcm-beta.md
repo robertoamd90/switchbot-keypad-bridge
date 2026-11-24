@@ -27,6 +27,37 @@ their full semantics are not established.
 
 ## Verification and limitations
 
+On 2026-11-24 the user confirmed reception in Home Assistant of
+fingerprint indices 1 and 2, NFC index 1, PIN index 1 and Lock.
+The supplied 22:06–22:07 log contains one completed action for each
+of these five attempts, with GCM session announcements. The same log
+confirms successful provisioning after the keypad itself announced
+mode 00 (CTR). The user confirmed HA events; the message did not
+explicitly report the LED result for each of the five attempts.
+Earlier fingerprint trials with the native replies had a green LED.
+The user subsequently confirmed that operation between keypad and bridge
+still worked after a bridge restart, using the saved association.
+Individual post-restart methods and event counts were not enumerated.
+
+The agreed security acceptance target is parity with the native
+keypad-to-lock association and action protocol. Evaluation must distinguish
+native protocol limitations from additional weaknesses introduced by this
+implementation. Compatibility and restart results do not alone prove parity.
+
+The host test `tests/test_gcm_request_flow.py` compiles the actual native
+request-handler branch with deterministic crypto and BLE doubles. It verifies
+duplicate retransmission without advancing the counter, rejection of stale
+requests and a second action, multi-poll progression, credential indices,
+locked/unlocked replies, failed sends, counter overflow and the poll limit.
+It tests handler state transitions, not the strength of the wire protocol.
+The separate real-crypto tests verify known-answer vectors and mutations.
+
+Remaining evidence gaps include active-adversary behavior on hardware,
+power-loss and concurrency cases, native pairing confidentiality and
+authentication, and the native device's own replay/rate-limit policies.
+Native capture decryption establishes the accepted normal message schedule;
+it does not establish the native device's behavior under malicious traffic.
+
 Compilation on ESP32-C3 and existing protocol, state, crypto and
 configuration checks must pass. Hardware verification must cover green
 indication and one event for each of fingerprint, PIN, NFC and Lock,
