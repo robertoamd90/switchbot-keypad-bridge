@@ -316,7 +316,11 @@ void SwitchbotKeypadBridge::loop() {
             ESP_LOGI(TAG, "Keypad GCM empty ACK test ended: poll reply %s; actions suspended",
                      complete ? "sent" : "not completed");
           }
-          if (!this->gcm_empty_ack_test_ && !this->gcm_lock_slot_test_ && !reference_test && complete &&
+          if (this->gcm_native_reply_test_) {
+            ESP_LOGI(TAG, "GCM native reply test ended: poll reply %s; actions suspended",
+                     complete ? "sent" : "not completed");
+          }
+          if (!this->gcm_native_reply_test_ && !this->gcm_empty_ack_test_ && !this->gcm_lock_slot_test_ && !reference_test && complete &&
               this->keypad_paired_ && !this->lock_linked_) {
             if (command.type == CommandType::LOCK) {
               this->keypad_state_.rearm();
@@ -834,7 +838,7 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
     uint8_t poll_suffix = 0;
     const bool plus_one = check_at(nonces[1], plus_one_command, &poll_suffix);
     const bool plus_two = check_at(nonces[2], plus_two_command);
-    ESP_LOGI(TAG, "Keypad GCM probe: N+2 reply follow-up length=%zu N=%s N+1=%s N+2=%s poll_at_N+1=%s poll_at_N+2=%s",
+    ESP_LOGI(TAG, "Keypad GCM probe: follow-up length=%zu N=%s N+1=%s N+2=%s poll_at_N+1=%s poll_at_N+2=%s",
              frame.size(), match ? "match" : "no", plus_one ? "match" : "no",
              plus_two ? "match" : "no", plus_one_command.type == CommandType::STATE_POLL ? "yes" : "no",
              plus_two_command.type == CommandType::STATE_POLL ? "yes" : "no");
@@ -854,10 +858,16 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
         std::memcpy(state_payload, this->keypad_gcm_reference_state_.data(), sizeof(state_payload));
         ESP_LOGI(TAG, "Keypad GCM: using genuine lock poll payload at nonce=N+3");
       }
-      if (send_reply(nonces[3], state_payload, sizeof(state_payload))) {
+      if (this->gcm_native_reply_test_) {
+        // Fixed diagnostic snapshot from the successful native fingerprint exchange.
+        const uint8_t native_state[] = {0x94, 0x08, 0x86, 0x56, 0, 0, 0, 0, 0x40, 0x09, 0x05, 0, 0, 0};
+        static_assert(sizeof(native_state) == sizeof(state_payload));
+        std::memcpy(state_payload, native_state, sizeof(native_state));
+      }
+      if (send_reply(nonces[this->gcm_native_reply_test_ ? 1 : 3], state_payload, sizeof(state_payload))) {
         if (this->keypad_gcm_probe_stage_ == KeypadGcmProbeStage::HOLD_POLL_REPLY) return;
         this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::AFTER_POLL_REPLY;
-        ESP_LOGI(TAG, "Keypad GCM probe: sent poll reply nonce=N+3");
+        ESP_LOGI(TAG, "Keypad GCM probe: sent poll reply nonce=N+%u", this->gcm_native_reply_test_ ? 1U : 3U);
       }
     } else {
       this->reject_keypad_gcm_exchange_();
@@ -888,17 +898,24 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
 
   const uint8_t *response = lock ? RESPONSE_LOCK : RESPONSE_UNLOCK;
   size_t response_length = lock ? sizeof(RESPONSE_LOCK) : sizeof(RESPONSE_UNLOCK);
+  const uint8_t native_unlock[] = {0x9E, 0xA4, 0x7F, 0x7F, 0x00};
+  if (this->gcm_native_reply_test_) {
+    if (!touch_unlock || method != UnlockMethod::FINGERPRINT) return;
+    response = native_unlock;
+    response_length = sizeof(native_unlock);
+  }
   if (this->gcm_empty_ack_test_) {
     if (!touch_unlock || method != UnlockMethod::FINGERPRINT) return;
     response_length = 0;
   }
-  if (send_reply(nonces[2], response, response_length)) {
+  if (send_reply(nonces[this->gcm_native_reply_test_ ? 0 : 2], response, response_length)) {
     this->keypad_gcm_command_ = initial_command;
     this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::WAIT_POLL;
     if (this->gcm_empty_ack_test_) {
       ESP_LOGI(TAG, "Keypad GCM empty ACK sent: wire_bytes=4 payload_bytes=0 tag=computed");
     }
-    ESP_LOGI(TAG, "Keypad GCM: sent %s reply nonce=N+2", lock ? "lock" : "unlock");
+    ESP_LOGI(TAG, "Keypad GCM: sent %s reply nonce=N+%u", lock ? "lock" : "unlock",
+             this->gcm_native_reply_test_ ? 0U : 2U);
   }
 }
 

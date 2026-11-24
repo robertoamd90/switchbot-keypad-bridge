@@ -147,7 +147,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_GCM_DIAGNOSTICS, default=False): cv.boolean,
         cv.Optional(CONF_GCM_LOCK_SLOT_TEST, default=False): cv.boolean,
         cv.Optional(CONF_KEYPAD_CRYPTO_MODE, default="ctr"): cv.one_of(
-            "ctr", "gcm_experimental", "gcm_empty_ack_test", lower=True
+            "ctr", "gcm_experimental", "gcm_empty_ack_test", "gcm_native_reply_test", lower=True
         ),
         cv.Optional(CONF_RESET_BUTTON): button.button_schema(
             ResetButton,
@@ -240,6 +240,7 @@ async def to_code(config):
     mode = config[CONF_KEYPAD_CRYPTO_MODE]
     cg.add(var.set_keypad_gcm_experimental(mode != "ctr"))
     cg.add(var.set_gcm_empty_ack_test(mode == "gcm_empty_ack_test"))
+    cg.add(var.set_gcm_native_reply_test(mode == "gcm_native_reply_test"))
 
     if keypad_conf := config.get(CONF_KEYPAD_ACTION):
         keypad = await event.new_event(
