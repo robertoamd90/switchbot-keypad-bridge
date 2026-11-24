@@ -277,7 +277,10 @@ void SwitchbotKeypadBridge::loop() {
           this->keypad_gcm_probe_slot_ = 0;
           this->keypad_gcm_probe_stage_ = KeypadGcmProbeStage::FIRST_FRAME;
           this->keypad_gcm_command_ = {};
-          this->keypad_gcm_reference_active_ = this->gcm_diagnostics_ &&
+          this->keypad_gcm_last_request_.clear();
+          this->keypad_gcm_last_response_.clear();
+          this->keypad_gcm_poll_count_ = 0;
+          this->keypad_gcm_reference_active_ = !this->keypad_gcm_enabled_ && this->gcm_diagnostics_ &&
               this->pairing_ui_.take_keypad_reference_probe(this->keypad_gcm_reference_state_);
         }
       } else {
@@ -754,6 +757,7 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
       // with all-zero trailers. This profile is only for the experiment.
       reply = {0x01, 0x00, 0x01, 0x00};
       esp_fill_random(reply.data() + 4, 12);
+      std::copy_n(reply.data() + 4, 12, this->keypad_gcm_next_nonce_.begin());
       this->keypad_gcm_probe_slot_ = wire[7];
     }
     if (!this->tx_characteristic_->notify(reply.data(), reply.size(), connection)) {
@@ -775,9 +779,98 @@ void SwitchbotKeypadBridge::inspect_keypad_gcm_frame_(const std::string &frame, 
   }
   if (this->keypad_gcm_experimental_ &&
       ((stage == KeypadGcmProbeStage::FIRST_FRAME && frame.size() != 12) ||
-       (stage == KeypadGcmProbeStage::WAIT_POLL && frame.size() != 8))) {
+       ((stage == KeypadGcmProbeStage::WAIT_POLL ||
+         (this->keypad_gcm_enabled_ && stage == KeypadGcmProbeStage::AFTER_POLL_REPLY)) &&
+        frame.size() != 8 && frame != this->keypad_gcm_last_request_))) {
     this->reject_keypad_gcm_exchange_();
     ESP_LOGW(TAG, "GCM experimental exchange rejected: unexpected frame length");
+    return;
+  }
+  if (this->keypad_gcm_enabled_) {
+    // Retransmit exactly the cached ciphertext. Never reapply an action.
+    if (frame == this->keypad_gcm_last_request_) {
+      if (!this->tx_characteristic_->notify(
+              reinterpret_cast<const uint8_t *>(this->keypad_gcm_last_response_.data()),
+              this->keypad_gcm_last_response_.size(), connection)) {
+        this->reject_keypad_gcm_exchange_();
+      }
+      return;
+    }
+    if (this->keypad_gcm_poll_count_ >= 16) {
+      this->reject_keypad_gcm_exchange_();
+      return;
+    }
+    const uint8_t prefix[2] = {wire[2], wire[3]};
+    uint8_t plaintext[LockSession::MAX_PAYLOAD]{};
+    const size_t length = frame.size() - LockSession::HEADER_LEN;
+    if (!aes_gcm_decrypt_verify_prefix(this->shared_key_.data(),
+                                       this->keypad_gcm_next_nonce_.data(),
+                                       wire + LockSession::HEADER_LEN, plaintext, length, prefix)) {
+      this->reject_keypad_gcm_exchange_();
+      ESP_LOGW(TAG, "GCM request rejected: tag or session counter mismatch");
+      return;
+    }
+    const auto command = decode_lock_command(plaintext, length);
+    mbedtls_platform_zeroize(plaintext, sizeof(plaintext));
+    const bool first = stage == KeypadGcmProbeStage::FIRST_FRAME;
+    const bool unlock = command.type == CommandType::UNLOCK &&
+        (command.method == UnlockMethod::FINGERPRINT ||
+         command.method == UnlockMethod::PIN || command.method == UnlockMethod::NFC);
+    if ((first && command.type != CommandType::LOCK && !unlock) ||
+        (!first && command.type != CommandType::STATE_POLL)) {
+      this->reject_keypad_gcm_exchange_();
+      return;
+    }
+    auto next_nonce = this->keypad_gcm_next_nonce_;
+    if (!advance_gcm_probe_nonce(next_nonce)) {
+      this->reject_keypad_gcm_exchange_();
+      return;
+    }
+    const auto action = first ? command : this->keypad_gcm_command_;
+    const bool locked = action.type == CommandType::LOCK;
+    const bool already_locked =
+        this->keypad_state_.lock_state() == KeypadState::LockState::LOCKED;
+    // Bench-captured fields with unknown mechanics retain representative values.
+    // State and action status are selected from verified native captures.
+    const uint8_t ack[5] = {
+        static_cast<uint8_t>(locked ? (already_locked ? 0x86 : 0x96) : 0x9E),
+        0xA4, 0x7F, 0x7F, 0x00};
+    uint8_t state[14] = {0x94, 0x08, 0x86, 0x56, 0, 0, 0, 0, 0x40, 0x09, 0x05, 0, 0, 0};
+    if (locked) {
+      state[0] = 0x86;
+      state[8] = 0;
+      state[9] = 0x7C;
+      state[10] = 0x08;
+    }
+    const uint8_t *body = first ? ack : state;
+    const size_t body_size = first ? sizeof(ack) : sizeof(state);
+    uint8_t response[18] = {0x01, wire[1]};
+    uint8_t tag[16];
+    // Matches the native same-nonce reply schedule. Its security limits
+    // (16-bit tags and reuse across directions) are documented separately.
+    if (!aes_gcm_encrypt_raw_key(this->shared_key_.data(),
+                                 this->keypad_gcm_next_nonce_.data(), body,
+                                 response + LockSession::HEADER_LEN, body_size, tag)) {
+      this->reject_keypad_gcm_exchange_();
+      return;
+    }
+    response[2] = tag[0];
+    response[3] = tag[1];
+    this->keypad_gcm_last_request_ = frame;
+    this->keypad_gcm_last_response_.assign(reinterpret_cast<const char *>(response),
+                                          LockSession::HEADER_LEN + body_size);
+    this->keypad_gcm_next_nonce_ = next_nonce;
+    this->keypad_gcm_command_ = action;
+    this->keypad_gcm_probe_stage_ = first ? KeypadGcmProbeStage::WAIT_POLL
+                                        : KeypadGcmProbeStage::AFTER_POLL_REPLY;
+    if (!first) ++this->keypad_gcm_poll_count_;
+    if (!this->tx_characteristic_->notify(response, LockSession::HEADER_LEN + body_size, connection)) {
+      this->reject_keypad_gcm_exchange_();
+      return;
+    }
+    ESP_LOGD(TAG, "GCM verified %s; reply bytes=%zu poll_count=%u",
+             first ? (locked ? "lock" : "unlock") : "state poll",
+             LockSession::HEADER_LEN + body_size, unsigned(this->keypad_gcm_poll_count_));
     return;
   }
   const uint8_t prefix[2] = {wire[2], wire[3]};

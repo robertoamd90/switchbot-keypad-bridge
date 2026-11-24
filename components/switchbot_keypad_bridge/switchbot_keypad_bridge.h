@@ -91,6 +91,7 @@ class SwitchbotKeypadBridge : public Component {
   }
   void set_gcm_empty_ack_test(bool enabled) { this->gcm_empty_ack_test_ = enabled; }
   void set_gcm_native_reply_test(bool enabled) { this->gcm_native_reply_test_ = enabled; }
+  void set_keypad_gcm_enabled(bool enabled) { this->keypad_gcm_enabled_ = enabled; }
 
   // Report LOCKED on the next keypad poll, without operating a physical lock
   // or publishing a Lock event. Safe to call from local ESPHome automations.
@@ -153,6 +154,11 @@ class SwitchbotKeypadBridge : public Component {
   bool gcm_lock_slot_test_{false};
   bool gcm_empty_ack_test_{false};
   bool gcm_native_reply_test_{false};
+  bool keypad_gcm_enabled_{false};
+  std::array<uint8_t, 12> keypad_gcm_next_nonce_{};
+  std::string keypad_gcm_last_request_;
+  std::string keypad_gcm_last_response_;
+  uint8_t keypad_gcm_poll_count_{0};
 
   // Generates a fresh AES-128 session key into shared_key_ and persists it
   // to NVS — the one place keys are created (first boot and reset_pairing()).

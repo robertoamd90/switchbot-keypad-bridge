@@ -36,15 +36,16 @@ class RearmConfigurationTest(unittest.TestCase):
 
 
 class KeypadCryptoConfigurationTest(unittest.TestCase):
-    def test_gcm_requires_explicit_experimental_selection(self):
+    def test_gcm_requires_explicit_selection(self):
         option = "keypad_crypto_mode"
         self.assertEqual(bridge.CONFIG_SCHEMA({})[option], "ctr")
         self.assertEqual(
             bridge.CONFIG_SCHEMA({option: "gcm_experimental"})[option],
             "gcm_experimental",
         )
+        self.assertEqual(bridge.CONFIG_SCHEMA({option: "gcm"})[option], "gcm")
         with self.assertRaises(cv.Invalid):
-            bridge.CONFIG_SCHEMA({option: "gcm"})
+            bridge.CONFIG_SCHEMA({option: "gcm_typo"})
 
 
 if __name__ == "__main__":
